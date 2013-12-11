@@ -22,7 +22,8 @@ LOCAL_SRC_FILES :=  lib/cache.c \
 	lib/genl/family.c \
 	lib/genl/genl.c \
 	lib/route/rtnl.c \
-	lib/route/route_utils.c
+	lib/route/route_utils.c \
+	lib/netfilter/nfnl.c
 
 #LOCAL_CFLAGS :=
 LOCAL_C_INCLUDES := $(LOCAL_PATH)/include
