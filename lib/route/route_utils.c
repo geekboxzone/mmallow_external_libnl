@@ -63,6 +63,11 @@ static void __init init_routing_table_names(void)
 	add_routing_table_name(RT_TABLE_LOCAL, "local");
 };
 
+static void __exit release_routing_table_names(void)
+{
+	__trans_list_clear(&table_names);
+}
+
 int rtnl_route_read_table_names(const char *path)
 {
 	__trans_list_clear(&table_names);
@@ -103,6 +108,11 @@ static void __init init_proto_names(void)
 	add_proto_name(RTPROT_BOOT, "boot");
 	add_proto_name(RTPROT_STATIC, "static");
 };
+
+static void __exit release_proto_names(void)
+{
+	__trans_list_clear(&proto_names);
+}
 
 int rtnl_route_read_protocol_names(const char *path)
 {
@@ -153,29 +163,6 @@ char *rtnl_route_metric2str(int metric, char *buf, size_t size)
 int rtnl_route_str2metric(const char *name)
 {
 	return __str2type(name, route_metrices, ARRAY_SIZE(route_metrices));
-}
-
-/** @} */
-
-/**
- * @name Nexthop Flags Translations
- * @{
- */
-
-static struct trans_tbl nh_flags[] = {
-	__ADD(RTNH_F_DEAD, dead)
-	__ADD(RTNH_F_PERVASIVE, pervasive)
-	__ADD(RTNH_F_ONLINK, onlink)
-};
-
-char * rtnl_route_nh_flags2str(int flags, char *buf, size_t len)
-{
-	return __flags2str(flags, buf, len, nh_flags, ARRAY_SIZE(nh_flags));
-}
-
-int rtnl_route_nh_str2flags(const char *name)
-{
-	return __str2flags(name, nh_flags, ARRAY_SIZE(nh_flags));
 }
 
 /** @} */

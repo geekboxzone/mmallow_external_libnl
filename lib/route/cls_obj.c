@@ -39,6 +39,8 @@ static void cls_free_data(struct nl_object *obj)
 	cops = rtnl_cls_lookup_ops(cls);
 	if (cops && cops->co_free_data)
 		cops->co_free_data(cls);
+
+	nl_data_free(cls->c_subdata);
 }
 
 static int cls_clone(struct nl_object *_dst, struct nl_object *_src)
@@ -52,6 +54,13 @@ static int cls_clone(struct nl_object *_dst, struct nl_object *_src)
 	if (err < 0)
 		goto errout;
 
+	if (src->c_subdata) {
+		if (!(dst->c_subdata = nl_data_clone(src->c_subdata))) {
+			err = -NLE_NOMEM;
+			goto errout;
+		}
+	}
+
 	cops = rtnl_cls_lookup_ops(src);
 	if (cops && cops->co_clone)
 		err = cops->co_clone(dst, src);
@@ -59,59 +68,50 @@ errout:
 	return err;
 }
 
-static int cls_dump_brief(struct nl_object *obj, struct nl_dump_params *p)
+static void cls_dump_line(struct nl_object *obj, struct nl_dump_params *p)
 {
 	char buf[32];
 	struct rtnl_cls *cls = (struct rtnl_cls *) obj;
 	struct rtnl_cls_ops *cops;
-	int line;
 
-	line = tca_dump_brief((struct rtnl_tca *) cls, "cls", p, 0);
+	tca_dump_line((struct rtnl_tca *) cls, "cls", p);
 
-	dp_dump(p, " prio %u protocol %s", cls->c_prio,
+	nl_dump(p, " prio %u protocol %s", cls->c_prio,
 		nl_ether_proto2str(cls->c_protocol, buf, sizeof(buf)));
 
 	cops = rtnl_cls_lookup_ops(cls);
-	if (cops && cops->co_dump[NL_DUMP_BRIEF])
-		line = cops->co_dump[NL_DUMP_BRIEF](cls, p, line);
-	dp_dump(p, "\n");
-
-	return line;
+	if (cops && cops->co_dump[NL_DUMP_LINE])
+		cops->co_dump[NL_DUMP_LINE](cls, p);
+	nl_dump(p, "\n");
 }
 
-static int cls_dump_full(struct nl_object *obj, struct nl_dump_params *p)
+static void cls_dump_details(struct nl_object *obj, struct nl_dump_params *p)
 {
 	struct rtnl_cls *cls = (struct rtnl_cls *) obj;
 	struct rtnl_cls_ops *cops;
-	int line;
 
-	line = cls_dump_brief(obj, p);
-	line = tca_dump_full((struct rtnl_tca *) cls, p, line);
+	cls_dump_line(obj, p);
+	tca_dump_details((struct rtnl_tca *) cls, p);
 
 	cops = rtnl_cls_lookup_ops(cls);
-	if (cops && cops->co_dump[NL_DUMP_FULL])
-		line = cops->co_dump[NL_DUMP_FULL](cls, p, line);
+	if (cops && cops->co_dump[NL_DUMP_DETAILS])
+		cops->co_dump[NL_DUMP_DETAILS](cls, p);
 	else
-		dp_dump(p, "no options\n");
-
-	return line;
+		nl_dump(p, "no options\n");
 }
 
-static int cls_dump_stats(struct nl_object *obj, struct nl_dump_params *p)
+static void cls_dump_stats(struct nl_object *obj, struct nl_dump_params *p)
 {
 	struct rtnl_cls *cls = (struct rtnl_cls *) obj;
 	struct rtnl_cls_ops *cops;
-	int line;
 
-	line = cls_dump_full(obj, p);
-	line = tca_dump_stats((struct rtnl_tca *) cls, p, line);
-	dp_dump(p, "\n");
+	cls_dump_details(obj, p);
+	tca_dump_stats((struct rtnl_tca *) cls, p);
+	nl_dump(p, "\n");
 
 	cops = rtnl_cls_lookup_ops(cls);
 	if (cops && cops->co_dump[NL_DUMP_STATS])
-		line = cops->co_dump[NL_DUMP_STATS](cls, p, line);
-
-	return line;
+		cops->co_dump[NL_DUMP_STATS](cls, p);
 }
 
 /**
@@ -142,6 +142,11 @@ void rtnl_cls_set_ifindex(struct rtnl_cls *f, int ifindex)
 	tca_set_ifindex((struct rtnl_tca *) f, ifindex);
 }
 
+int rtnl_cls_get_ifindex(struct rtnl_cls *cls)
+{
+	return cls->c_ifindex;
+}
+
 void rtnl_cls_set_handle(struct rtnl_cls *f, uint32_t handle)
 {
 	tca_set_handle((struct rtnl_tca *) f, handle);
@@ -152,19 +157,36 @@ void rtnl_cls_set_parent(struct rtnl_cls *f, uint32_t parent)
 	tca_set_parent((struct rtnl_tca *) f, parent);
 }
 
-void rtnl_cls_set_kind(struct rtnl_cls *f, const char *kind)
+uint32_t rtnl_cls_get_parent(struct rtnl_cls *cls)
 {
-	tca_set_kind((struct rtnl_tca *) f, kind);
-	f->c_ops = __rtnl_cls_lookup_ops(kind);
+	return cls->c_parent;
 }
 
-void rtnl_cls_set_prio(struct rtnl_cls *cls, int prio)
+int rtnl_cls_set_kind(struct rtnl_cls *cls, const char *kind)
+{
+	if (cls->ce_mask & TCA_ATTR_KIND)
+		return -NLE_EXIST;
+
+	tca_set_kind((struct rtnl_tca *) cls, kind);
+
+	/* Force allocation of data */
+	rtnl_cls_data(cls);
+
+	return 0;
+}
+
+struct rtnl_cls_ops *rtnl_cls_get_ops(struct rtnl_cls *cls)
+{
+	return cls->c_ops;
+}
+
+void rtnl_cls_set_prio(struct rtnl_cls *cls, uint16_t prio)
 {
 	cls->c_prio = prio;
 	cls->ce_mask |= CLS_ATTR_PRIO;
 }
 
-int rtnl_cls_get_prio(struct rtnl_cls *cls)
+uint16_t rtnl_cls_get_prio(struct rtnl_cls *cls)
 {
 	if (cls->ce_mask & CLS_ATTR_PRIO)
 		return cls->c_prio;
@@ -172,18 +194,44 @@ int rtnl_cls_get_prio(struct rtnl_cls *cls)
 		return 0;
 }
 
-void rtnl_cls_set_protocol(struct rtnl_cls *cls, int protocol)
+void rtnl_cls_set_protocol(struct rtnl_cls *cls, uint16_t protocol)
 {
 	cls->c_protocol = protocol;
 	cls->ce_mask |= CLS_ATTR_PROTOCOL;
 }
 
-int rtnl_cls_get_protocol(struct rtnl_cls *cls)
+uint16_t rtnl_cls_get_protocol(struct rtnl_cls *cls)
 {
 	if (cls->ce_mask & CLS_ATTR_PROTOCOL)
 		return cls->c_protocol;
 	else
 		return ETH_P_ALL;
+}
+
+void *rtnl_cls_data(struct rtnl_cls *cls)
+{
+	if (!cls->c_subdata) {
+		struct rtnl_cls_ops *ops = cls->c_ops;
+
+		if (!ops) {
+			if (!cls->c_kind[0])
+				BUG();
+
+			ops = __rtnl_cls_lookup_ops(cls->c_kind);
+			if (ops == NULL)
+				return NULL;
+
+			cls->c_ops = ops;
+		}
+
+		if (!ops->co_size)
+			BUG();
+
+		if (!(cls->c_subdata = nl_data_alloc(NULL, ops->co_size)))
+			return NULL;
+	}
+
+	return nl_data_get(cls->c_subdata);
 }
 
 /** @} */
@@ -193,9 +241,11 @@ struct nl_object_ops cls_obj_ops = {
 	.oo_size		= sizeof(struct rtnl_cls),
 	.oo_free_data		= cls_free_data,
 	.oo_clone		= cls_clone,
-	.oo_dump[NL_DUMP_BRIEF]	= cls_dump_brief,
-	.oo_dump[NL_DUMP_FULL]	= cls_dump_full,
-	.oo_dump[NL_DUMP_STATS]	= cls_dump_stats,
+	.oo_dump = {
+	    [NL_DUMP_LINE]	= cls_dump_line,
+	    [NL_DUMP_DETAILS]	= cls_dump_details,
+	    [NL_DUMP_STATS]	= cls_dump_stats,
+	},
 	.oo_compare		= tca_compare,
 	.oo_id_attrs		= (TCA_ATTR_IFINDEX | TCA_ATTR_HANDLE),
 };

@@ -6,7 +6,7 @@
  *	License as published by the Free Software Foundation version 2.1
  *	of the License.
  *
- * Copyright (c) 2003-2006 Thomas Graf <tgraf@suug.ch>
+ * Copyright (c) 2003-2008 Thomas Graf <tgraf@suug.ch>
  */
 
 /**
@@ -175,10 +175,8 @@ struct nl_cache *nl_cache_alloc(struct nl_cache_ops *ops)
 	struct nl_cache *cache;
 
 	cache = calloc(1, sizeof(*cache));
-	if (!cache) {
-		nl_errno(ENOMEM);
+	if (!cache)
 		return NULL;
-	}
 
 	nl_init_list_head(&cache->c_items);
 	cache->c_ops = ops;
@@ -188,22 +186,43 @@ struct nl_cache *nl_cache_alloc(struct nl_cache_ops *ops)
 	return cache;
 }
 
+int nl_cache_alloc_and_fill(struct nl_cache_ops *ops, struct nl_sock *sock,
+			    struct nl_cache **result)
+{
+	struct nl_cache *cache;
+	int err;
+	
+	if (!(cache = nl_cache_alloc(ops)))
+		return -NLE_NOMEM;
+
+	if (sock && (err = nl_cache_refill(sock, cache)) < 0) {
+		nl_cache_free(cache);
+		return err;
+	}
+
+	*result = cache;
+	return 0;
+}
+
 /**
  * Allocate an empty cache based on type name
  * @arg kind		Name of cache type
  * @return A newly allocated and initialized cache.
  */
-struct nl_cache *nl_cache_alloc_name(const char *kind)
+int nl_cache_alloc_name(const char *kind, struct nl_cache **result)
 {
 	struct nl_cache_ops *ops;
+	struct nl_cache *cache;
 
 	ops = nl_cache_ops_lookup(kind);
-	if (!ops) {
-		nl_error(ENOENT, "Unable to lookup cache \"%s\"", kind);
-		return NULL;
-	}
+	if (!ops)
+		return -NLE_NOCACHE;
 
-	return nl_cache_alloc(ops);
+	if (!(cache = nl_cache_alloc(ops)))
+		return -NLE_NOMEM;
+
+	*result = cache;
+	return 0;
 }
 
 /**
@@ -264,6 +283,9 @@ void nl_cache_clear(struct nl_cache *cache)
  */
 void nl_cache_free(struct nl_cache *cache)
 {
+	if (!cache)
+		return;
+
 	nl_cache_clear(cache);
 	NL_DBG(1, "Freeing cache %p <%s>...\n", cache, nl_cache_name(cache));
 	free(cache);
@@ -304,12 +326,12 @@ int nl_cache_add(struct nl_cache *cache, struct nl_object *obj)
 	struct nl_object *new;
 
 	if (cache->c_ops->co_obj_ops != obj->ce_ops)
-		return nl_error(EINVAL, "Object mismatches cache type");
+		return -NLE_OBJ_MISMATCH;
 
 	if (!nl_list_empty(&obj->ce_list)) {
 		new = nl_object_clone(obj);
 		if (!new)
-			return nl_errno(ENOMEM);
+			return -NLE_NOMEM;
 	} else {
 		nl_object_get(obj);
 		new = obj;
@@ -331,7 +353,7 @@ int nl_cache_add(struct nl_cache *cache, struct nl_object *obj)
 int nl_cache_move(struct nl_cache *cache, struct nl_object *obj)
 {
 	if (cache->c_ops->co_obj_ops != obj->ce_ops)
-		return nl_error(EINVAL, "Object mismatches cache type");
+		return -NLE_OBJ_MISMATCH;
 
 	NL_DBG(3, "Moving object %p to cache %p\n", obj, cache);
 	
@@ -405,7 +427,7 @@ struct nl_object *nl_cache_search(struct nl_cache *cache,
 
 /**
  * Request a full dump from the kernel to fill a cache
- * @arg handle		Netlink handle
+ * @arg sk		Netlink socket.
  * @arg cache		Cache subjected to be filled.
  *
  * Send a dumping request to the kernel causing it to dump all objects
@@ -414,15 +436,15 @@ struct nl_object *nl_cache_search(struct nl_cache *cache,
  * Use nl_cache_pickup() to read the objects from the socket and fill them
  * into a cache.
  */
-int nl_cache_request_full_dump(struct nl_handle *handle, struct nl_cache *cache)
+int nl_cache_request_full_dump(struct nl_sock *sk, struct nl_cache *cache)
 {
 	NL_DBG(2, "Requesting dump from kernel for cache %p <%s>...\n",
 	          cache, nl_cache_name(cache));
 
 	if (cache->c_ops->co_request_update == NULL)
-		return nl_error(EOPNOTSUPP, "Operation not supported");
+		return -NLE_OPNOTSUPP;
 
-	return cache->c_ops->co_request_update(cache, handle);
+	return cache->c_ops->co_request_update(cache, sk);
 }
 
 /** @cond SKIP */
@@ -439,7 +461,7 @@ static int update_msg_parser(struct nl_msg *msg, void *arg)
 }
 /** @endcond */
 
-int __cache_pickup(struct nl_handle *handle, struct nl_cache *cache,
+int __cache_pickup(struct nl_sock *sk, struct nl_cache *cache,
 		   struct nl_parser_param *param)
 {
 	int err;
@@ -452,17 +474,17 @@ int __cache_pickup(struct nl_handle *handle, struct nl_cache *cache,
 	NL_DBG(1, "Picking up answer for cache %p <%s>...\n",
 		  cache, nl_cache_name(cache));
 
-	cb = nl_cb_clone(handle->h_cb);
+	cb = nl_cb_clone(sk->s_cb);
 	if (cb == NULL)
-		return nl_get_errno();
+		return -NLE_NOMEM;
 
 	nl_cb_set(cb, NL_CB_VALID, NL_CB_CUSTOM, update_msg_parser, &x);
 
-	err = nl_recvmsgs(handle, cb);
+	err = nl_recvmsgs(sk, cb);
 	if (err < 0)
 		NL_DBG(2, "While picking up for %p <%s>, recvmsgs() returned " \
 		       "%d: %s", cache, nl_cache_name(cache),
-		       err, nl_geterror());
+		       err, nl_geterror(err));
 
 	nl_cb_put(cb);
 
@@ -476,7 +498,7 @@ static int pickup_cb(struct nl_object *c, struct nl_parser_param *p)
 
 /**
  * Pickup a netlink dump response and put it into a cache.
- * @arg handle		Netlink handle.
+ * @arg sk		Netlink socket.
  * @arg cache		Cache to put items into.
  *
  * Waits for netlink messages to arrive, parses them and puts them into
@@ -484,18 +506,18 @@ static int pickup_cb(struct nl_object *c, struct nl_parser_param *p)
  *
  * @return 0 on success or a negative error code.
  */
-int nl_cache_pickup(struct nl_handle *handle, struct nl_cache *cache)
+int nl_cache_pickup(struct nl_sock *sk, struct nl_cache *cache)
 {
 	struct nl_parser_param p = {
 		.pp_cb = pickup_cb,
 		.pp_arg = cache,
 	};
 
-	return __cache_pickup(handle, cache, &p);
+	return __cache_pickup(sk, cache, &p);
 }
 
 static int cache_include(struct nl_cache *cache, struct nl_object *obj,
-			 struct nl_msgtype *type, change_func_t cb)
+			 struct nl_msgtype *type, change_func_t cb, void *data)
 {
 	struct nl_object *old;
 
@@ -507,7 +529,7 @@ static int cache_include(struct nl_cache *cache, struct nl_object *obj,
 			nl_cache_remove(old);
 			if (type->mt_act == NL_ACT_DEL) {
 				if (cb)
-					cb(cache, old, NL_ACT_DEL);
+					cb(cache, old, NL_ACT_DEL, data);
 				nl_object_put(old);
 			}
 		}
@@ -515,10 +537,10 @@ static int cache_include(struct nl_cache *cache, struct nl_object *obj,
 		if (type->mt_act == NL_ACT_NEW) {
 			nl_cache_move(cache, obj);
 			if (old == NULL && cb)
-				cb(cache, obj, NL_ACT_NEW);
+				cb(cache, obj, NL_ACT_NEW, data);
 			else if (old) {
 				if (nl_object_diff(old, obj) && cb)
-					cb(cache, obj, NL_ACT_CHANGE);
+					cb(cache, obj, NL_ACT_CHANGE, data);
 
 				nl_object_put(old);
 			}
@@ -533,36 +555,37 @@ static int cache_include(struct nl_cache *cache, struct nl_object *obj,
 }
 
 int nl_cache_include(struct nl_cache *cache, struct nl_object *obj,
-		     change_func_t change_cb)
+		     change_func_t change_cb, void *data)
 {
 	struct nl_cache_ops *ops = cache->c_ops;
 	int i;
 
 	if (ops->co_obj_ops != obj->ce_ops)
-		return nl_error(EINVAL, "Object mismatches cache type");
+		return -NLE_OBJ_MISMATCH;
 
 	for (i = 0; ops->co_msgtypes[i].mt_id >= 0; i++)
 		if (ops->co_msgtypes[i].mt_id == obj->ce_msgtype)
 			return cache_include(cache, obj, &ops->co_msgtypes[i],
-					     change_cb);
+					     change_cb, data);
 
-	return nl_errno(EINVAL);
+	return -NLE_MSGTYPE_NOSUPPORT;
 }
 
 static int resync_cb(struct nl_object *c, struct nl_parser_param *p)
 {
 	struct nl_cache_assoc *ca = p->pp_arg;
 
-	return nl_cache_include(ca->ca_cache, c, ca->ca_change);
+	return nl_cache_include(ca->ca_cache, c, ca->ca_change, ca->ca_change_data);
 }
 
-int nl_cache_resync(struct nl_handle *handle, struct nl_cache *cache,
-		    change_func_t change_cb)
+int nl_cache_resync(struct nl_sock *sk, struct nl_cache *cache,
+		    change_func_t change_cb, void *data)
 {
 	struct nl_object *obj, *next;
 	struct nl_cache_assoc ca = {
 		.ca_cache = cache,
 		.ca_change = change_cb,
+		.ca_change_data = data,
 	};
 	struct nl_parser_param p = {
 		.pp_cb = resync_cb,
@@ -575,17 +598,23 @@ int nl_cache_resync(struct nl_handle *handle, struct nl_cache *cache,
 	/* Mark all objects so we can see if some of them are obsolete */
 	nl_cache_mark_all(cache);
 
-	err = nl_cache_request_full_dump(handle, cache);
+	err = nl_cache_request_full_dump(sk, cache);
 	if (err < 0)
 		goto errout;
 
-	err = __cache_pickup(handle, cache, &p);
+	err = __cache_pickup(sk, cache, &p);
 	if (err < 0)
 		goto errout;
 
-	nl_list_for_each_entry_safe(obj, next, &cache->c_items, ce_list)
-		if (nl_object_is_marked(obj))
+	nl_list_for_each_entry_safe(obj, next, &cache->c_items, ce_list) {
+		if (nl_object_is_marked(obj)) {
+			nl_object_get(obj);
 			nl_cache_remove(obj);
+			if (change_cb)
+				change_cb(cache, obj, NL_ACT_DEL, data);
+			nl_object_put(obj);
+		}
+	}
 
 	NL_DBG(1, "Finished resyncing %p <%s>\n", cache, nl_cache_name(cache));
 
@@ -607,23 +636,19 @@ int nl_cache_parse(struct nl_cache_ops *ops, struct sockaddr_nl *who,
 {
 	int i, err;
 
-	if (!nlmsg_valid_hdr(nlh, ops->co_hdrsize)) {
-		err = nl_error(EINVAL, "netlink message too short to be "
-				       "of kind %s", ops->co_name);
-		goto errout;
-	}
+	if (!nlmsg_valid_hdr(nlh, ops->co_hdrsize))
+		return -NLE_MSG_TOOSHORT;
 
 	for (i = 0; ops->co_msgtypes[i].mt_id >= 0; i++) {
 		if (ops->co_msgtypes[i].mt_id == nlh->nlmsg_type) {
 			err = ops->co_msg_parser(ops, who, nlh, params);
-			if (err != -ENOENT)
+			if (err != -NLE_OPNOTSUPP)
 				goto errout;
 		}
 	}
 
 
-	err = nl_error(EINVAL, "Unsupported netlink message type %d",
-		       nlh->nlmsg_type);
+	err = -NLE_MSGTYPE_NOSUPPORT;
 errout:
 	return err;
 }
@@ -651,7 +676,7 @@ int nl_cache_parse_and_add(struct nl_cache *cache, struct nl_msg *msg)
 
 /**
  * (Re)fill a cache with the contents in the kernel.
- * @arg handle		netlink handle
+ * @arg sk		Netlink socket.
  * @arg cache		cache to update
  *
  * Clears the specified cache and fills it with the current state in
@@ -659,11 +684,11 @@ int nl_cache_parse_and_add(struct nl_cache *cache, struct nl_msg *msg)
  *
  * @return 0 or a negative error code.
  */
-int nl_cache_refill(struct nl_handle *handle, struct nl_cache *cache)
+int nl_cache_refill(struct nl_sock *sk, struct nl_cache *cache)
 {
 	int err;
 
-	err = nl_cache_request_full_dump(handle, cache);
+	err = nl_cache_request_full_dump(sk, cache);
 	if (err < 0)
 		return err;
 
@@ -671,7 +696,7 @@ int nl_cache_refill(struct nl_handle *handle, struct nl_cache *cache)
 	       cache, nl_cache_name(cache));
 	nl_cache_clear(cache);
 
-	return nl_cache_pickup(handle, cache);
+	return nl_cache_pickup(sk, cache);
 }
 
 /** @} */
@@ -728,7 +753,7 @@ void nl_cache_dump_filter(struct nl_cache *cache,
 			  struct nl_dump_params *params,
 			  struct nl_object *filter)
 {
-	int type = params ? params->dp_type : NL_DUMP_FULL;
+	int type = params ? params->dp_type : NL_DUMP_DETAILS;
 	struct nl_object_ops *ops;
 	struct nl_object *obj;
 

@@ -107,7 +107,7 @@ enum {
 };
 
 /*
- *	Device mapping structure. I'd just gone off and designed a 
+ *	Device mapping structure. I'd just gone off and designed a
  *	beautiful scheme using only loadable modules with arguments
  *	for driver options and along come the PCMCIA people 8)
  *
@@ -116,11 +116,11 @@ enum {
  *	being very small might be worth keeping for clean configuration.
  */
 
-struct ifmap 
+struct ifmap
 {
 	unsigned long mem_start;
 	unsigned long mem_end;
-	unsigned short base_addr; 
+	unsigned short base_addr;
 	unsigned char irq;
 	unsigned char dma;
 	unsigned char port;

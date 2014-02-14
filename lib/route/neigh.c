@@ -6,7 +6,7 @@
  *	License as published by the Free Software Foundation version 2.1
  *	of the License.
  *
- * Copyright (c) 2003-2006 Thomas Graf <tgraf@suug.ch>
+ * Copyright (c) 2003-2008 Thomas Graf <tgraf@suug.ch>
  */
 
 /**
@@ -61,7 +61,7 @@
  * @code
  * // The first step is to retrieve a list of all available neighbour within
  * // the kernel and put them into a cache.
- * struct nl_cache *cache = rtnl_neigh_alloc_cache(handle);
+ * struct nl_cache *cache = rtnl_neigh_alloc_cache(sk);
  *
  * // Neighbours can then be looked up by the interface and destination
  * // address:
@@ -86,7 +86,7 @@
  * // block until the operation has been completed. Alternatively the required
  * // netlink message can be built using rtnl_neigh_build_add_request()
  * // to be sent out using nl_send_auto_complete().
- * rtnl_neigh_add(nl_handle, neigh, NLM_F_REPLACE);
+ * rtnl_neigh_add(sk, neigh, NLM_F_CREATE);
  *
  * // Free the memory
  * rtnl_neigh_put(neigh);
@@ -109,7 +109,7 @@
  * // block until the operation has been completed. Alternatively the required
  * // netlink message can be built using rtnl_neigh_build_delete_request()
  * // to be sent out using nl_send_auto_complete().
- * rtnl_neigh_delete(handle, neigh, 0);
+ * rtnl_neigh_delete(sk, neigh, 0);
  *
  * // Free the memory
  * rtnl_neigh_put(neigh);
@@ -139,7 +139,7 @@
  * // block until the operation has been completed. Alternatively the required
  * // netlink message can be built using rtnl_neigh_build_change_request()
  * // to be sent out using nl_send_auto_complete().
- * rtnl_neigh_change(handle, neigh, 0);
+ * rtnl_neigh_add(sk, neigh, NLM_F_REPLACE);
  *
  * // Free the memory
  * rtnl_neigh_put(neigh);
@@ -187,15 +187,13 @@ static int neigh_clone(struct nl_object *_dst, struct nl_object *_src)
 
 	if (src->n_lladdr)
 		if (!(dst->n_lladdr = nl_addr_clone(src->n_lladdr)))
-			goto errout;
+			return -NLE_NOMEM;
 
 	if (src->n_dst)
 		if (!(dst->n_dst = nl_addr_clone(src->n_dst)))
-			goto errout;
+			return -NLE_NOMEM;
 
 	return 0;
-errout:
-	return nl_get_errno();
 }
 
 static int neigh_compare(struct nl_object *_a, struct nl_object *_b,
@@ -213,7 +211,7 @@ static int neigh_compare(struct nl_object *_a, struct nl_object *_b,
 	diff |= NEIGH_DIFF(LLADDR,	nl_addr_cmp(a->n_lladdr, b->n_lladdr));
 	diff |= NEIGH_DIFF(DST,		nl_addr_cmp(a->n_dst, b->n_dst));
 
-	if (flags & LOOSE_FLAG_COMPARISON) {
+	if (flags & LOOSE_COMPARISON) {
 		diff |= NEIGH_DIFF(STATE,
 				  (a->n_state ^ b->n_state) & b->n_state_mask);
 		diff |= NEIGH_DIFF(FLAGS,
@@ -261,7 +259,7 @@ static int neigh_msg_parser(struct nl_cache_ops *ops, struct sockaddr_nl *who,
 
 	neigh = rtnl_neigh_alloc();
 	if (!neigh) {
-		err = nl_errno(ENOMEM);
+		err = -NLE_NOMEM;
 		goto errout;
 	}
 
@@ -283,18 +281,22 @@ static int neigh_msg_parser(struct nl_cache_ops *ops, struct sockaddr_nl *who,
 			   NEIGH_ATTR_TYPE);
 
 	if (tb[NDA_LLADDR]) {
-		neigh->n_lladdr = nla_get_addr(tb[NDA_LLADDR], AF_UNSPEC);
-		if (!neigh->n_lladdr)
+		neigh->n_lladdr = nl_addr_alloc_attr(tb[NDA_LLADDR], AF_UNSPEC);
+		if (!neigh->n_lladdr) {
+			err = -NLE_NOMEM;
 			goto errout;
+		}
 		nl_addr_set_family(neigh->n_lladdr,
 				   nl_addr_guess_family(neigh->n_lladdr));
 		neigh->ce_mask |= NEIGH_ATTR_LLADDR;
 	}
 
 	if (tb[NDA_DST]) {
-		neigh->n_dst = nla_get_addr(tb[NDA_DST], neigh->n_family);
-		if (!neigh->n_dst)
+		neigh->n_dst = nl_addr_alloc_attr(tb[NDA_DST], neigh->n_family);
+		if (!neigh->n_dst) {
+			err = -NLE_NOMEM;
 			goto errout;
+		}
 		neigh->ce_mask |= NEIGH_ATTR_DST;
 	}
 
@@ -315,23 +317,18 @@ static int neigh_msg_parser(struct nl_cache_ops *ops, struct sockaddr_nl *who,
 	}
 
 	err = pp->pp_cb((struct nl_object *) neigh, pp);
-	if (err < 0)
-		goto errout;
-
-	err = P_ACCEPT;
-
 errout:
 	rtnl_neigh_put(neigh);
 	return err;
 }
 
-static int neigh_request_update(struct nl_cache *c, struct nl_handle *h)
+static int neigh_request_update(struct nl_cache *c, struct nl_sock *h)
 {
 	return nl_rtgen_request(h, RTM_GETNEIGH, AF_UNSPEC, NLM_F_DUMP);
 }
 
 
-static int neigh_dump_brief(struct nl_object *a, struct nl_dump_params *p)
+static void neigh_dump_line(struct nl_object *a, struct nl_dump_params *p)
 {
 	char dst[INET6_ADDRSTRLEN+5], lladdr[INET6_ADDRSTRLEN+5];
 	struct rtnl_neigh *n = (struct rtnl_neigh *) a;
@@ -340,162 +337,95 @@ static int neigh_dump_brief(struct nl_object *a, struct nl_dump_params *p)
 
 	link_cache = nl_cache_mngt_require("route/link");
 
-	dp_dump(p, "%s ", nl_addr2str(n->n_dst, dst, sizeof(dst)));
+	nl_dump_line(p, "%s ", nl_addr2str(n->n_dst, dst, sizeof(dst)));
 
 	if (link_cache)
-		dp_dump(p, "dev %s ",
+		nl_dump(p, "dev %s ",
 			rtnl_link_i2name(link_cache, n->n_ifindex,
 					 state, sizeof(state)));
 	else
-		dp_dump(p, "dev %d ", n->n_ifindex);
+		nl_dump(p, "dev %d ", n->n_ifindex);
 
 	if (n->ce_mask & NEIGH_ATTR_LLADDR)
-		dp_dump(p, "lladdr %s ",
+		nl_dump(p, "lladdr %s ",
 			nl_addr2str(n->n_lladdr, lladdr, sizeof(lladdr)));
 
 	rtnl_neigh_state2str(n->n_state, state, sizeof(state));
 	rtnl_neigh_flags2str(n->n_flags, flags, sizeof(flags));
 
 	if (state[0])
-		dp_dump(p, "<%s", state);
+		nl_dump(p, "<%s", state);
 	if (flags[0])
-		dp_dump(p, "%s%s", state[0] ? "," : "<", flags);
+		nl_dump(p, "%s%s", state[0] ? "," : "<", flags);
 	if (state[0] || flags[0])
-		dp_dump(p, ">");
-	dp_dump(p, "\n");
-
-	return 1;
+		nl_dump(p, ">");
+	nl_dump(p, "\n");
 }
 
-static int neigh_dump_full(struct nl_object *a, struct nl_dump_params *p)
+static void neigh_dump_details(struct nl_object *a, struct nl_dump_params *p)
 {
 	char rtn_type[32];
 	struct rtnl_neigh *n = (struct rtnl_neigh *) a;
 	int hz = nl_get_hz();
 
-	int line = neigh_dump_brief(a, p);
+	neigh_dump_line(a, p);
 
-	dp_dump_line(p, line++, "    refcnt %u type %s confirmed %u used "
+	nl_dump_line(p, "    refcnt %u type %s confirmed %u used "
 				"%u updated %u\n",
 		n->n_cacheinfo.nci_refcnt,
 		nl_rtntype2str(n->n_type, rtn_type, sizeof(rtn_type)),
 		n->n_cacheinfo.nci_confirmed/hz,
 		n->n_cacheinfo.nci_used/hz, n->n_cacheinfo.nci_updated/hz);
-
-	return line;
 }
 
-static int neigh_dump_stats(struct nl_object *a, struct nl_dump_params *p)
+static void neigh_dump_stats(struct nl_object *a, struct nl_dump_params *p)
 {
-	return neigh_dump_full(a, p);
+	neigh_dump_details(a, p);
 }
 
-static int neigh_dump_xml(struct nl_object *obj, struct nl_dump_params *p)
+static void neigh_dump_env(struct nl_object *obj, struct nl_dump_params *p)
 {
 	struct rtnl_neigh *neigh = (struct rtnl_neigh *) obj;
 	char buf[128];
-	int line = 0;
 
-	dp_dump_line(p, line++, "<neighbour>\n");
-	dp_dump_line(p, line++, "  <family>%s</family>\n",
+	nl_dump_line(p, "NEIGH_FAMILY=%s\n",
 		     nl_af2str(neigh->n_family, buf, sizeof(buf)));
 
 	if (neigh->ce_mask & NEIGH_ATTR_LLADDR)
-		dp_dump_line(p, line++, "  <lladdr>%s</lladdr>\n",
+		nl_dump_line(p, "NEIGHT_LLADDR=%s\n",
 			     nl_addr2str(neigh->n_lladdr, buf, sizeof(buf)));
 
 	if (neigh->ce_mask & NEIGH_ATTR_DST)
-		dp_dump_line(p, line++, "  <dst>%s</dst>\n",
-			     nl_addr2str(neigh->n_dst, buf, sizeof(buf)));
-
-	if (neigh->ce_mask & NEIGH_ATTR_IFINDEX) {
-		struct nl_cache *link_cache;
-	
-		link_cache = nl_cache_mngt_require("route/link");
-
-		if (link_cache)
-			dp_dump_line(p, line++, "  <device>%s</device>\n",
-				     rtnl_link_i2name(link_cache,
-						      neigh->n_ifindex,
-						      buf, sizeof(buf)));
-		else
-			dp_dump_line(p, line++, "  <device>%u</device>\n",
-				     neigh->n_ifindex);
-	}
-
-	if (neigh->ce_mask & NEIGH_ATTR_PROBES)
-		dp_dump_line(p, line++, "  <probes>%u</probes>\n",
-			     neigh->n_probes);
-
-	if (neigh->ce_mask & NEIGH_ATTR_TYPE)
-		dp_dump_line(p, line++, "  <type>%s</type>\n",
-			     nl_rtntype2str(neigh->n_type, buf, sizeof(buf)));
-
-	rtnl_neigh_flags2str(neigh->n_flags, buf, sizeof(buf));
-	if (buf[0])
-		dp_dump_line(p, line++, "  <flags>%s</flags>\n", buf);
-
-	rtnl_neigh_state2str(neigh->n_state, buf, sizeof(buf));
-	if (buf[0])
-		dp_dump_line(p, line++, "  <state>%s</state>\n", buf);
-
-	dp_dump_line(p, line++, "</neighbour>\n");
-
-#if 0
-	struct rtnl_ncacheinfo n_cacheinfo;
-#endif
-
-	return line;
-}
-
-static int neigh_dump_env(struct nl_object *obj, struct nl_dump_params *p)
-{
-	struct rtnl_neigh *neigh = (struct rtnl_neigh *) obj;
-	char buf[128];
-	int line = 0;
-
-	dp_dump_line(p, line++, "NEIGH_FAMILY=%s\n",
-		     nl_af2str(neigh->n_family, buf, sizeof(buf)));
-
-	if (neigh->ce_mask & NEIGH_ATTR_LLADDR)
-		dp_dump_line(p, line++, "NEIGHT_LLADDR=%s\n",
-			     nl_addr2str(neigh->n_lladdr, buf, sizeof(buf)));
-
-	if (neigh->ce_mask & NEIGH_ATTR_DST)
-		dp_dump_line(p, line++, "NEIGH_DST=%s\n",
+		nl_dump_line(p, "NEIGH_DST=%s\n",
 			     nl_addr2str(neigh->n_dst, buf, sizeof(buf)));
 
 	if (neigh->ce_mask & NEIGH_ATTR_IFINDEX) {
 		struct nl_cache *link_cache;
 
-		dp_dump_line(p, line++, "NEIGH_IFINDEX=%u\n",
-			     neigh->n_ifindex);
+		nl_dump_line(p, "NEIGH_IFINDEX=%u\n", neigh->n_ifindex);
 
 		link_cache = nl_cache_mngt_require("route/link");
 		if (link_cache)
-			dp_dump_line(p, line++, "NEIGH_IFNAME=%s\n",
+			nl_dump_line(p, "NEIGH_IFNAME=%s\n",
 				     rtnl_link_i2name(link_cache,
 						      neigh->n_ifindex,
 						      buf, sizeof(buf)));
 	}
 
 	if (neigh->ce_mask & NEIGH_ATTR_PROBES)
-		dp_dump_line(p, line++, "NEIGH_PROBES=%u\n",
-			     neigh->n_probes);
+		nl_dump_line(p, "NEIGH_PROBES=%u\n", neigh->n_probes);
 
 	if (neigh->ce_mask & NEIGH_ATTR_TYPE)
-		dp_dump_line(p, line++, "NEIGH_TYPE=%s\n",
+		nl_dump_line(p, "NEIGH_TYPE=%s\n",
 			     nl_rtntype2str(neigh->n_type, buf, sizeof(buf)));
 
 	rtnl_neigh_flags2str(neigh->n_flags, buf, sizeof(buf));
 	if (buf[0])
-		dp_dump_line(p, line++, "NEIGH_FLAGS=%s\n", buf);
+		nl_dump_line(p, "NEIGH_FLAGS=%s\n", buf);
 
 	rtnl_neigh_state2str(neigh->n_state, buf, sizeof(buf));
 	if (buf[0])
-		dp_dump_line(p, line++, "NEIGH_STATE=%s\n", buf);
-
-	return line;
+		nl_dump_line(p, "NEIGH_STATE=%s\n", buf);
 }
 
 /**
@@ -522,31 +452,17 @@ void rtnl_neigh_put(struct rtnl_neigh *neigh)
 
 /**
  * Build a neighbour cache including all neighbours currently configured in the kernel.
- * @arg handle		netlink handle
+ * @arg sk		Netlink socket.
+ * @arg result		Pointer to store resulting cache.
  *
  * Allocates a new neighbour cache, initializes it properly and updates it
  * to include all neighbours currently configured in the kernel.
  *
- * @note The caller is responsible for destroying and freeing the
- *       cache after using it.
- * @return The new cache or NULL if an error occured.
+ * @return 0 on success or a negative error code.
  */
-struct nl_cache *rtnl_neigh_alloc_cache(struct nl_handle *handle)
+int rtnl_neigh_alloc_cache(struct nl_sock *sock, struct nl_cache **result)
 {
-	struct nl_cache *cache;
-
-	cache = nl_cache_alloc(&rtnl_neigh_ops);
-	if (cache == NULL)
-		return NULL;
-
-	if (handle && nl_cache_refill(handle, cache) < 0) {
-		nl_cache_free(cache);
-		return NULL;
-	}
-
-	NL_DBG(2, "Returning new cache %p\n", cache);
-
-	return cache;
+	return nl_cache_alloc_and_fill(&rtnl_neigh_ops, sock, result);
 }
 
 /**
@@ -579,22 +495,26 @@ struct rtnl_neigh * rtnl_neigh_get(struct nl_cache *cache, int ifindex,
  * @{
  */
 
-static struct nl_msg * build_neigh_msg(struct rtnl_neigh *tmpl, int cmd,
-				       int flags)
+static int build_neigh_msg(struct rtnl_neigh *tmpl, int cmd, int flags,
+			   struct nl_msg **result)
 {
 	struct nl_msg *msg;
 	struct ndmsg nhdr = {
 		.ndm_ifindex = tmpl->n_ifindex,
-		.ndm_family = nl_addr_get_family(tmpl->n_dst),
 		.ndm_state = NUD_PERMANENT,
 	};
+
+	if (!(tmpl->ce_mask & NEIGH_ATTR_DST))
+		return -NLE_MISSING_ATTR;
+
+	nhdr.ndm_family = nl_addr_get_family(tmpl->n_dst);
 
 	if (tmpl->ce_mask & NEIGH_ATTR_STATE)
 		nhdr.ndm_state = tmpl->n_state;
 
 	msg = nlmsg_alloc_simple(cmd, flags);
 	if (!msg)
-		return NULL;
+		return -NLE_NOMEM;
 
 	if (nlmsg_append(msg, &nhdr, sizeof(nhdr), NLMSG_ALIGNTO) < 0)
 		goto nla_put_failure;
@@ -604,17 +524,19 @@ static struct nl_msg * build_neigh_msg(struct rtnl_neigh *tmpl, int cmd,
 	if (tmpl->ce_mask & NEIGH_ATTR_LLADDR)
 		NLA_PUT_ADDR(msg, NDA_LLADDR, tmpl->n_lladdr);
 
-	return msg;
+	*result = msg;
+	return 0;
 
 nla_put_failure:
 	nlmsg_free(msg);
-	return NULL;
+	return -NLE_MSGSIZE;
 }
 
 /**
  * Build netlink request message to add a new neighbour
  * @arg tmpl		template with data of new neighbour
  * @arg flags		additional netlink message flags
+ * @arg result		Pointer to store resulting message.
  *
  * Builds a new netlink message requesting a addition of a new
  * neighbour. The netlink message header isn't fully equipped with
@@ -628,16 +550,17 @@ nla_put_failure:
  *  - Destination address (rtnl_neigh_set_dst())
  *  - Link layer address (rtnl_neigh_set_lladdr())
  *
- * @return The netlink message
+ * @return 0 on success or a negative error code.
  */
-struct nl_msg * rtnl_neigh_build_add_request(struct rtnl_neigh *tmpl, int flags)
+int rtnl_neigh_build_add_request(struct rtnl_neigh *tmpl, int flags,
+				 struct nl_msg **result)
 {
-	return build_neigh_msg(tmpl, RTM_NEWNEIGH, NLM_F_CREATE | flags);
+	return build_neigh_msg(tmpl, RTM_NEWNEIGH, flags, result);
 }
 
 /**
  * Add a new neighbour
- * @arg handle		netlink handle
+ * @arg sk		Netlink socket.
  * @arg tmpl		template with requested changes
  * @arg flags		additional netlink message flags
  *
@@ -653,21 +576,20 @@ struct nl_msg * rtnl_neigh_build_add_request(struct rtnl_neigh *tmpl, int flags)
  *
  * @return 0 on sucess or a negative error if an error occured.
  */
-int rtnl_neigh_add(struct nl_handle *handle, struct rtnl_neigh *tmpl, int flags)
+int rtnl_neigh_add(struct nl_sock *sk, struct rtnl_neigh *tmpl, int flags)
 {
 	int err;
 	struct nl_msg *msg;
 	
-	msg = rtnl_neigh_build_add_request(tmpl, flags);
-	if (!msg)
-		return nl_errno(ENOMEM);
+	if ((err = rtnl_neigh_build_add_request(tmpl, flags, &msg)) < 0)
+		return err;
 
-	err = nl_send_auto_complete(handle, msg);
+	err = nl_send_auto_complete(sk, msg);
+	nlmsg_free(msg);
 	if (err < 0)
 		return err;
 
-	nlmsg_free(msg);
-	return nl_wait_for_ack(handle);
+	return wait_for_ack(sk);
 }
 
 /** @} */
@@ -681,6 +603,7 @@ int rtnl_neigh_add(struct nl_handle *handle, struct rtnl_neigh *tmpl, int flags)
  * Build a netlink request message to delete a neighbour
  * @arg neigh		neighbour to delete
  * @arg flags		additional netlink message flags
+ * @arg result		Pointer to store resulting message.
  *
  * Builds a new netlink message requesting a deletion of a neighbour.
  * The netlink message header isn't fully equipped with all relevant
@@ -688,17 +611,17 @@ int rtnl_neigh_add(struct nl_handle *handle, struct rtnl_neigh *tmpl, int flags)
  * or supplemented as needed. \a neigh must point to an existing
  * neighbour.
  *
- * @return The netlink message
+ * @return 0 on success or a negative error code.
  */
-struct nl_msg *rtnl_neigh_build_delete_request(struct rtnl_neigh *neigh,
-					       int flags)
+int rtnl_neigh_build_delete_request(struct rtnl_neigh *neigh, int flags,
+				    struct nl_msg **result)
 {
-	return build_neigh_msg(neigh, RTM_DELNEIGH, flags);
+	return build_neigh_msg(neigh, RTM_DELNEIGH, flags, result);
 }
 
 /**
  * Delete a neighbour
- * @arg handle		netlink handle
+ * @arg sk		Netlink socket.
  * @arg neigh		neighbour to delete
  * @arg flags		additional netlink message flags
  *
@@ -708,81 +631,21 @@ struct nl_msg *rtnl_neigh_build_delete_request(struct rtnl_neigh *neigh,
  *
  * @return 0 on sucess or a negative error if an error occured.
  */
-int rtnl_neigh_delete(struct nl_handle *handle, struct rtnl_neigh *neigh,
+int rtnl_neigh_delete(struct nl_sock *sk, struct rtnl_neigh *neigh,
 		      int flags)
 {
-	int err;
 	struct nl_msg *msg;
+	int err;
 	
-	msg = rtnl_neigh_build_delete_request(neigh, flags);
-	if (!msg)
-		return nl_errno(ENOMEM);
+	if ((err = rtnl_neigh_build_delete_request(neigh, flags, &msg)) < 0)
+		return err;
 
-	err = nl_send_auto_complete(handle, msg);
+	err = nl_send_auto_complete(sk, msg);
+	nlmsg_free(msg);
 	if (err < 0)
 		return err;
 
-	nlmsg_free(msg);
-	return nl_wait_for_ack(handle);
-}
-
-/** @} */
-
-/**
- * @name Neighbour Modification
- * @{
- */
-
-/**
- * Build a netlink request message to change neighbour attributes
- * @arg neigh		the neighbour to change
- * @arg flags		additional netlink message flags
- *
- * Builds a new netlink message requesting a change of a neigh
- * attributes. The netlink message header isn't fully equipped with
- * all relevant fields and must thus be sent out via nl_send_auto_complete()
- * or supplemented as needed.
- *
- * @return The netlink message
- * @note Not all attributes can be changed, see
- *       \ref neigh_changeable "Changeable Attributes" for a list.
- */
-struct nl_msg *rtnl_neigh_build_change_request(struct rtnl_neigh *neigh,
-					       int flags)
-{
-	return build_neigh_msg(neigh, RTM_NEWNEIGH, NLM_F_REPLACE | flags);
-}
-
-/**
- * Change neighbour attributes
- * @arg handle		netlink handle
- * @arg neigh		neighbour to be changed
- * @arg flags		additional netlink message flags
- *
- * Builds a netlink message by calling rtnl_neigh_build_change_request(),
- * sends the request to the kernel and waits for the next ACK to be
- * received and thus blocks until the request has been fullfilled.
- *
- * @return 0 on sucess or a negative error if an error occured.
- * @note Not all attributes can be changed, see
- *       \ref neigh_changeable "Changeable Attributes" for a list.
- */
-int rtnl_neigh_change(struct nl_handle *handle, struct rtnl_neigh *neigh,
-		      int flags)
-{
-	int err;
-	struct nl_msg *msg;
-	
-	msg = rtnl_neigh_build_change_request(neigh, flags);
-	if (!msg)
-		return nl_errno(ENOMEM);
-
-	err = nl_send_auto_complete(handle, msg);
-	if (err < 0)
-		return err;
-
-	nlmsg_free(msg);
-	return nl_wait_for_ack(handle);
+	return wait_for_ack(sk);
 }
 
 /** @} */
@@ -893,10 +756,7 @@ void rtnl_neigh_set_ifindex(struct rtnl_neigh *neigh, int ifindex)
 
 int rtnl_neigh_get_ifindex(struct rtnl_neigh *neigh)
 {
-	if (neigh->ce_mask & NEIGH_ATTR_IFINDEX)
-		return neigh->n_ifindex;
-	else
-		return RTNL_LINK_NOT_FOUND;
+	return neigh->n_ifindex;
 }
 
 static inline int __assign_addr(struct rtnl_neigh *neigh, struct nl_addr **pos,
@@ -905,8 +765,7 @@ static inline int __assign_addr(struct rtnl_neigh *neigh, struct nl_addr **pos,
 	if (!nocheck) {
 		if (neigh->ce_mask & NEIGH_ATTR_FAMILY) {
 			if (new->a_family != neigh->n_family)
-				return nl_error(EINVAL,
-						"Address family mismatch");
+				return -NLE_AF_MISMATCH;
 		} else {
 			neigh->n_family = new->a_family;
 			neigh->ce_mask |= NEIGH_ATTR_FAMILY;
@@ -957,6 +816,11 @@ void rtnl_neigh_set_family(struct rtnl_neigh *neigh, int family)
 	neigh->ce_mask |= NEIGH_ATTR_FAMILY;
 }
 
+int rtnl_neigh_get_family(struct rtnl_neigh *neigh)
+{
+	return neigh->n_family;
+}
+
 void rtnl_neigh_set_type(struct rtnl_neigh *neigh, int type)
 {
 	neigh->n_type = type;
@@ -978,14 +842,15 @@ static struct nl_object_ops neigh_obj_ops = {
 	.oo_size		= sizeof(struct rtnl_neigh),
 	.oo_free_data		= neigh_free_data,
 	.oo_clone		= neigh_clone,
-	.oo_dump[NL_DUMP_BRIEF]	= neigh_dump_brief,
-	.oo_dump[NL_DUMP_FULL]	= neigh_dump_full,
-	.oo_dump[NL_DUMP_STATS]	= neigh_dump_stats,
-	.oo_dump[NL_DUMP_XML]	= neigh_dump_xml,
-	.oo_dump[NL_DUMP_ENV]	= neigh_dump_env,
+	.oo_dump = {
+	    [NL_DUMP_LINE]	= neigh_dump_line,
+	    [NL_DUMP_DETAILS]	= neigh_dump_details,
+	    [NL_DUMP_STATS]	= neigh_dump_stats,
+	    [NL_DUMP_ENV]	= neigh_dump_env,
+	},
 	.oo_compare		= neigh_compare,
 	.oo_attrs2str		= neigh_attrs2str,
-	.oo_id_attrs		= (NEIGH_ATTR_DST | NEIGH_ATTR_FAMILY),
+	.oo_id_attrs		= (NEIGH_ATTR_IFINDEX | NEIGH_ATTR_DST | NEIGH_ATTR_FAMILY),
 };
 
 static struct nl_af_group neigh_groups[] = {

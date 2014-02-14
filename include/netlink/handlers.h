@@ -23,8 +23,9 @@ extern "C" {
 #endif
 
 struct nl_cb;
-struct nl_handle;
+struct nl_sock;
 struct nl_msg;
+struct ucred;
 
 /**
  * @name Callback Typedefs
@@ -63,10 +64,6 @@ enum nl_cb_action {
 	/** Stop parsing altogether and discard remaining messages */
 	NL_STOP,
 };
-
-/* backwards compatibility */
-#define NL_PROCEED NL_OK
-#define NL_EXIT NL_STOP
 
 /**
  * Callback kinds
@@ -129,15 +126,15 @@ extern int  nl_cb_err(struct nl_cb *, enum nl_cb_kind, nl_recvmsg_err_cb_t,
 		      void *);
 
 extern void nl_cb_overwrite_recvmsgs(struct nl_cb *,
-				     int (*func)(struct nl_handle *,
+				     int (*func)(struct nl_sock *,
 						 struct nl_cb *));
 extern void nl_cb_overwrite_recv(struct nl_cb *,
-				 int (*func)(struct nl_handle *,
+				 int (*func)(struct nl_sock *,
 					     struct sockaddr_nl *,
 					     unsigned char **,
 					     struct ucred **));
 extern void nl_cb_overwrite_send(struct nl_cb *,
-				 int (*func)(struct nl_handle *,
+				 int (*func)(struct nl_sock *,
 					     struct nl_msg *));
 
 #ifdef __cplusplus

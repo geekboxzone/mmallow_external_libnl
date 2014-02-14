@@ -6,7 +6,7 @@
  *	License as published by the Free Software Foundation version 2.1
  *	of the License.
  *
- * Copyright (c) 2003-2006 Thomas Graf <tgraf@suug.ch>
+ * Copyright (c) 2003-2008 Thomas Graf <tgraf@suug.ch>
  */
 
 /**
@@ -98,13 +98,13 @@ static struct nl_cache_ops rtnl_qdisc_ops;
 static int qdisc_msg_parser(struct nl_cache_ops *ops, struct sockaddr_nl *who,
 			    struct nlmsghdr *n, struct nl_parser_param *pp)
 {
-	int err = -ENOMEM;
+	int err;
 	struct rtnl_qdisc *qdisc;
 	struct rtnl_qdisc_ops *qops;
 
 	qdisc = rtnl_qdisc_alloc();
 	if (!qdisc) {
-		err = nl_errno(ENOMEM);
+		err = -NLE_NOMEM;
 		goto errout;
 	}
 
@@ -122,25 +122,20 @@ static int qdisc_msg_parser(struct nl_cache_ops *ops, struct sockaddr_nl *who,
 	}
 
 	err = pp->pp_cb((struct nl_object *) qdisc, pp);
-	if (err < 0)
-		goto errout_free;
-
-	err = P_ACCEPT;
-
 errout_free:
 	rtnl_qdisc_put(qdisc);
 errout:
 	return err;
 }
 
-static int qdisc_request_update(struct nl_cache *c, struct nl_handle *h)
+static int qdisc_request_update(struct nl_cache *c, struct nl_sock *sk)
 {
 	struct tcmsg tchdr = {
 		.tcm_family = AF_UNSPEC,
 		.tcm_ifindex = c->c_iarg1,
 	};
 
-	return nl_send_simple(h, RTM_GETQDISC, NLM_F_DUMP, &tchdr,
+	return nl_send_simple(sk, RTM_GETQDISC, NLM_F_DUMP, &tchdr,
 			      sizeof(tchdr));
 }
 
@@ -149,15 +144,15 @@ static int qdisc_request_update(struct nl_cache *c, struct nl_handle *h)
  * @{
  */
 
-static struct nl_msg *qdisc_build(struct rtnl_qdisc *qdisc, int type, int flags)
+static int qdisc_build(struct rtnl_qdisc *qdisc, int type, int flags,
+		       struct nl_msg **result)
 {
 	struct rtnl_qdisc_ops *qops;
-	struct nl_msg *msg;
 	int err;
 
-	msg = tca_build_msg((struct rtnl_tca *) qdisc, type, flags);
-	if (!msg)
-		goto errout;
+	err = tca_build_msg((struct rtnl_tca *) qdisc, type, flags, result);
+	if (err < 0)
+		return err;
 
 	qops = rtnl_qdisc_lookup_ops(qdisc);
 	if (qops && qops->qo_get_opts) {
@@ -165,24 +160,33 @@ static struct nl_msg *qdisc_build(struct rtnl_qdisc *qdisc, int type, int flags)
 		
 		opts = qops->qo_get_opts(qdisc);
 		if (opts) {
-			err = nla_put_nested(msg, TCA_OPTIONS, opts);
+			err = nla_put_nested(*result, TCA_OPTIONS, opts);
 			nlmsg_free(opts);
 			if (err < 0)
 				goto errout;
 		}
 	}
+	/* Some qdiscs don't accept properly nested messages (e.g. netem). To
+	 * accomodate for this, they can complete the message themselves.
+	 */		
+	else if (qops && qops->qo_build_msg) {
+		err = qops->qo_build_msg(qdisc, *result);
+		if (err < 0)
+			goto errout;
+	}
 
-	return msg;
+	return 0;
 errout:
-	nlmsg_free(msg);
+	nlmsg_free(*result);
 
-	return NULL;
+	return err;
 }
 
 /**
  * Build a netlink message to add a new qdisc
  * @arg qdisc		qdisc to add 
  * @arg flags		additional netlink message flags
+ * @arg result		Pointer to store resulting message.
  *
  * Builds a new netlink message requesting an addition of a qdisc.
  * The netlink message header isn't fully equipped with all relevant
@@ -192,23 +196,17 @@ errout:
  * Common message flags used:
  *  - NLM_F_REPLACE - replace a potential existing qdisc
  *
- * @return New netlink message
+ * @return 0 on success or a negative error code.
  */
-struct nl_msg *rtnl_qdisc_build_add_request(struct rtnl_qdisc *qdisc,
-					    int flags)
+int rtnl_qdisc_build_add_request(struct rtnl_qdisc *qdisc, int flags,
+				 struct nl_msg **result)
 {
-	struct nl_msg *msg;
-
-	msg = qdisc_build(qdisc, RTM_NEWQDISC, NLM_F_CREATE | flags);
-	if (!msg)
-		nl_errno(ENOMEM);
-
-	return msg;
+	return qdisc_build(qdisc, RTM_NEWQDISC, NLM_F_CREATE | flags, result);
 }
 
 /**
  * Add a new qdisc
- * @arg handle		netlink handle
+ * @arg sk		Netlink socket.
  * @arg qdisc		qdisc to delete
  * @arg flags		additional netlink message flags
  *
@@ -221,22 +219,21 @@ struct nl_msg *rtnl_qdisc_build_add_request(struct rtnl_qdisc *qdisc,
  *
  * @return 0 on success or a negative error code
  */
-int rtnl_qdisc_add(struct nl_handle *handle, struct rtnl_qdisc *qdisc,
+int rtnl_qdisc_add(struct nl_sock *sk, struct rtnl_qdisc *qdisc,
 		   int flags)
 {
 	struct nl_msg *msg;
 	int err;
 
-	msg = rtnl_qdisc_build_add_request(qdisc, flags);
-	if (!msg)
-		return nl_errno(ENOMEM);
+	if ((err = rtnl_qdisc_build_add_request(qdisc, flags, &msg)) < 0)
+		return err;
 
-	err = nl_send_auto_complete(handle, msg);
+	err = nl_send_auto_complete(sk, msg);
+	nlmsg_free(msg);
 	if (err < 0)
 		return err;
 
-	nlmsg_free(msg);
-	return nl_wait_for_ack(handle);
+	return wait_for_ack(sk);
 }
 
 /** @} */
@@ -250,23 +247,25 @@ int rtnl_qdisc_add(struct nl_handle *handle, struct rtnl_qdisc *qdisc,
  * Build a netlink message to change attributes of a existing qdisc
  * @arg qdisc		qdisc to change
  * @arg new		new qdisc attributes
+ * @arg result		Pointer to store resulting message.
  *
  * Builds a new netlink message requesting an change of qdisc
  * attributes. The netlink message header isn't fully equipped
  * with all relevant fields and must be sent out via
  * nl_send_auto_complete() or supplemented as needed. 
  *
- * @return New netlink message
+ * @return 0 on success or a negative error code.
  */
-struct nl_msg *rtnl_qdisc_build_change_request(struct rtnl_qdisc *qdisc,
-					       struct rtnl_qdisc *new)
+int rtnl_qdisc_build_change_request(struct rtnl_qdisc *qdisc,
+				    struct rtnl_qdisc *new,
+				    struct nl_msg **result)
 {
-	return qdisc_build(qdisc, RTM_NEWQDISC, NLM_F_REPLACE);
+	return qdisc_build(qdisc, RTM_NEWQDISC, NLM_F_REPLACE, result);
 }
 
 /**
  * Change attributes of a qdisc
- * @arg handle		netlink handle
+ * @arg sk		Netlink socket.
  * @arg qdisc		qdisc to change
  * @arg new		new qdisc attributes
  *
@@ -276,22 +275,21 @@ struct nl_msg *rtnl_qdisc_build_change_request(struct rtnl_qdisc *qdisc,
  *
  * @return 0 on success or a negative error code
  */
-int rtnl_qdisc_change(struct nl_handle *handle, struct rtnl_qdisc *qdisc,
+int rtnl_qdisc_change(struct nl_sock *sk, struct rtnl_qdisc *qdisc,
 		      struct rtnl_qdisc *new)
 {
 	struct nl_msg *msg;
 	int err;
 
-	msg = rtnl_qdisc_build_change_request(qdisc, new);
-	if (!msg)
-		return nl_errno(ENOMEM);
+	if ((err = rtnl_qdisc_build_change_request(qdisc, new, &msg)) < 0)
+		return err;
 
-	err = nl_send_auto_complete(handle, msg);
+	err = nl_send_auto_complete(sk, msg);
+	nlmsg_free(msg);
 	if (err < 0)
 		return err;
 
-	nlmsg_free(msg);
-	return nl_wait_for_ack(handle);
+	return wait_for_ack(sk);
 }
 
 /** @} */
@@ -304,15 +302,17 @@ int rtnl_qdisc_change(struct nl_handle *handle, struct rtnl_qdisc *qdisc,
 /**
  * Build a netlink request message to delete a qdisc
  * @arg qdisc		qdisc to delete
+ * @arg result		Pointer to store resulting message.
  *
  * Builds a new netlink message requesting a deletion of a qdisc.
  * The netlink message header isn't fully equipped with all relevant
  * fields and must thus be sent out via nl_send_auto_complete()
  * or supplemented as needed.
  *
- * @return New netlink message
+ * @return 0 on success or a negative error code.
  */
-struct nl_msg *rtnl_qdisc_build_delete_request(struct rtnl_qdisc *qdisc)
+int rtnl_qdisc_build_delete_request(struct rtnl_qdisc *qdisc,
+				    struct nl_msg **result)
 {
 	struct nl_msg *msg;
 	struct tcmsg tchdr;
@@ -323,20 +323,24 @@ struct nl_msg *rtnl_qdisc_build_delete_request(struct rtnl_qdisc *qdisc)
 
 	msg = nlmsg_alloc_simple(RTM_DELQDISC, 0);
 	if (!msg)
-		return NULL;
+		return -NLE_NOMEM;
 
-	tchdr.tcm_family = AF_UNSPEC,
-	tchdr.tcm_handle = qdisc->q_handle,
-	tchdr.tcm_parent = qdisc->q_parent,
-	tchdr.tcm_ifindex = qdisc->q_ifindex,
-	nlmsg_append(msg, &tchdr, sizeof(tchdr), NLMSG_ALIGNTO);
+	tchdr.tcm_family = AF_UNSPEC;
+	tchdr.tcm_handle = qdisc->q_handle;
+	tchdr.tcm_parent = qdisc->q_parent;
+	tchdr.tcm_ifindex = qdisc->q_ifindex;
+	if (nlmsg_append(msg, &tchdr, sizeof(tchdr), NLMSG_ALIGNTO) < 0) {
+		nlmsg_free(msg);
+		return -NLE_MSGSIZE;
+	}
 
-	return msg;
+	*result = msg;
+	return 0;
 }
 
 /**
  * Delete a qdisc
- * @arg handle		netlink handle
+ * @arg sk		Netlink socket.
  * @arg qdisc		qdisc to delete
  *
  * Builds a netlink message by calling rtnl_qdisc_build_delete_request(),
@@ -345,21 +349,20 @@ struct nl_msg *rtnl_qdisc_build_delete_request(struct rtnl_qdisc *qdisc)
  *
  * @return 0 on success or a negative error code
  */
-int rtnl_qdisc_delete(struct nl_handle *handle, struct rtnl_qdisc *qdisc)
+int rtnl_qdisc_delete(struct nl_sock *sk, struct rtnl_qdisc *qdisc)
 {
 	struct nl_msg *msg;
 	int err;
 
-	msg = rtnl_qdisc_build_delete_request(qdisc);
-	if (!msg)
-		return nl_errno(ENOMEM);
+	if ((err = rtnl_qdisc_build_delete_request(qdisc, &msg)) < 0)
+		return err;
 
-	err = nl_send_auto_complete(handle, msg);
+	err = nl_send_auto_complete(sk, msg);
+	nlmsg_free(msg);
 	if (err < 0)
 		return err;
 
-	nlmsg_free(msg);
-	return nl_wait_for_ack(handle);
+	return wait_for_ack(sk);
 }
 
 /** @} */
@@ -372,29 +375,17 @@ int rtnl_qdisc_delete(struct nl_handle *handle, struct rtnl_qdisc *qdisc)
 /**
  * Build a qdisc cache including all qdiscs currently configured in
  * the kernel
- * @arg handle		netlink handle
+ * @arg sk		Netlink socket.
+ * @arg result		Pointer to store resulting message.
  *
  * Allocates a new cache, initializes it properly and updates it to
  * include all qdiscs currently configured in the kernel.
  *
- * @note The caller is responsible for destroying and freeing the
- *       cache after using it.
- * @return The cache or NULL if an error has occured.
+ * @return 0 on success or a negative error code.
  */
-struct nl_cache * rtnl_qdisc_alloc_cache(struct nl_handle *handle)
+int rtnl_qdisc_alloc_cache(struct nl_sock *sk, struct nl_cache **result)
 {
-	struct nl_cache * cache;
-	
-	cache = nl_cache_alloc(&rtnl_qdisc_ops);
-	if (cache == NULL)
-		return NULL;
-
-	if (handle && nl_cache_refill(handle, cache) < 0) {
-		nl_cache_free(cache);
-		return NULL;
-	}
-
-	return cache;
+	return nl_cache_alloc_and_fill(&rtnl_qdisc_ops, sk, result);
 }
 
 /**

@@ -6,10 +6,11 @@
  *	License as published by the Free Software Foundation version 2.1
  *	of the License.
  *
- * Copyright (c) 2003-2006 Thomas Graf <tgraf@suug.ch>
+ * Copyright (c) 2003-2008 Thomas Graf <tgraf@suug.ch>
  */
 
 /**
+ * @ingroup core
  * @defgroup cache_mngt Caching
  * @{
  */
@@ -60,11 +61,14 @@ struct nl_cache_ops *nl_cache_ops_associate(int protocol, int msgtype)
 	int i;
 	struct nl_cache_ops *ops;
 
-	for (ops = cache_ops; ops; ops = ops->co_next)
+	for (ops = cache_ops; ops; ops = ops->co_next) {
+		if (ops->co_protocol != protocol)
+			continue;
+
 		for (i = 0; ops->co_msgtypes[i].mt_id >= 0; i++)
-			if (ops->co_msgtypes[i].mt_id == msgtype &&
-			    ops->co_protocol == protocol)
+			if (ops->co_msgtypes[i].mt_id == msgtype)
 				return ops;
+	}
 
 	return NULL;
 }
@@ -126,15 +130,12 @@ void nl_cache_ops_foreach(void (*cb)(struct nl_cache_ops *, void *), void *arg)
  */
 int nl_cache_mngt_register(struct nl_cache_ops *ops)
 {
-	if (!ops->co_name)
-		return nl_error(EINVAL, "No cache name specified");
-
-	if (!ops->co_obj_ops)
-		return nl_error(EINVAL, "No obj cache ops specified");
+	if (!ops->co_name || !ops->co_obj_ops)
+		return -NLE_INVAL;
 
 	if (nl_cache_ops_lookup(ops->co_name))
-		return nl_error(EEXIST, "Cache operations already exist");
-	    
+		return -NLE_EXIST;
+
 	ops->co_next = cache_ops;
 	cache_ops = ops;
 
@@ -163,7 +164,7 @@ int nl_cache_mngt_unregister(struct nl_cache_ops *ops)
 			break;
 
 	if (!t)
-		return nl_error(ENOENT, "No such cache operations");
+		return -NLE_NOCACHE;
 
 	NL_DBG(1, "Unregistered cache operations %s\n", ops->co_name);
 

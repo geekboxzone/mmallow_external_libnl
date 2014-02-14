@@ -6,64 +6,14 @@
  *	License as published by the Free Software Foundation version 2.1
  *	of the License.
  *
- * Copyright (c) 2003-2006 Thomas Graf <tgraf@suug.ch>
+ * Copyright (c) 2003-2008 Thomas Graf <tgraf@suug.ch>
  */
 
 /**
- * @ingroup nl
+ * @ingroup core
  * @defgroup cb Callbacks/Customization
- * @brief
  *
- * Callbacks and overwriting capabilities are provided to take influence
- * in various control flows inside the library. All callbacks are packed
- * together in struct nl_cb which is then attached to a netlink socket or
- * passed on to the respective functions directly.
- *
- * Callbacks can control the flow of the underlying layer by returning
- * the appropriate error codes:
- * @code
- * Action ID        | Description
- * -----------------+-------------------------------------------------------
- * NL_OK       | Proceed with whatever comes next.
- * NL_SKIP          | Skip message currently being processed and continue
- *                  | with next message.
- * NL_STOP          | Stop parsing and discard all remaining messages in
- *                  | this set of messages.
- * @endcode
- *
- * All callbacks are optional and a default action is performed if no 
- * application specific implementation is provided:
- *
- * @code
- * Callback ID       | Default Return Value
- * ------------------+----------------------
- * NL_CB_VALID       | NL_OK
- * NL_CB_FINISH      | NL_STOP
- * NL_CB_OVERRUN     | NL_STOP
- * NL_CB_SKIPPED     | NL_SKIP
- * NL_CB_ACK         | NL_STOP
- * NL_CB_MSG_IN      | NL_OK
- * NL_CB_MSG_OUT     | NL_OK
- * NL_CB_INVALID     | NL_STOP
- * NL_CB_SEQ_CHECK   | NL_OK
- * NL_CB_SEND_ACK    | NL_OK
- *                   |
- * Error Callback    | NL_STOP
- * @endcode
- *
- * In order to simplify typical usages of the library, different sets of
- * default callback implementations exist:
- * @code
- * NL_CB_DEFAULT: No additional actions
- * NL_CB_VERBOSE: Automatically print warning and error messages to a file
- *                descriptor as appropriate. This is useful for CLI based
- *                applications.
- * NL_CB_DEBUG:   Print informal debugging information for each message
- *                received. This will result in every message beint sent or
- *                received to be printed to the screen in a decoded,
- *                human-readable format.
- * @endcode
- *
+ * @details
  * @par 1) Setting up a callback set
  * @code
  * // Allocate a callback set and initialize it to the verbose default set
@@ -140,7 +90,7 @@ static int nl_error_handler_verbose(struct sockaddr_nl *who,
 	print_header_content(ofd, &e->msg);
 	fprintf(ofd, "\n");
 
-	return e->error;
+	return -nl_syserr2nlerr(e->error);
 }
 
 static int nl_valid_handler_debug(struct nl_msg *msg, void *arg)
@@ -261,10 +211,8 @@ struct nl_cb *nl_cb_alloc(enum nl_cb_kind kind)
 		return NULL;
 
 	cb = calloc(1, sizeof(*cb));
-	if (!cb) {
-		nl_errno(ENOMEM);
+	if (!cb)
 		return NULL;
-	}
 
 	cb->cb_refcnt = 1;
 
@@ -338,10 +286,10 @@ int nl_cb_set(struct nl_cb *cb, enum nl_cb_type type, enum nl_cb_kind kind,
 	      nl_recvmsg_msg_cb_t func, void *arg)
 {
 	if (type < 0 || type > NL_CB_TYPE_MAX)
-		return nl_error(ERANGE, "Callback type out of range");
+		return -NLE_RANGE;
 
 	if (kind < 0 || kind > NL_CB_KIND_MAX)
-		return nl_error(ERANGE, "Callback kind out of range");
+		return -NLE_RANGE;
 
 	if (kind == NL_CB_CUSTOM) {
 		cb->cb_set[type] = func;
@@ -388,7 +336,7 @@ int nl_cb_err(struct nl_cb *cb, enum nl_cb_kind kind,
 	      nl_recvmsg_err_cb_t func, void *arg)
 {
 	if (kind < 0 || kind > NL_CB_KIND_MAX)
-		return nl_error(ERANGE, "Callback kind out of range");
+		return -NLE_RANGE;
 
 	if (kind == NL_CB_CUSTOM) {
 		cb->cb_err = func;
@@ -414,7 +362,7 @@ int nl_cb_err(struct nl_cb *cb, enum nl_cb_kind kind,
  * @arg func		replacement callback for nl_recvmsgs()
  */
 void nl_cb_overwrite_recvmsgs(struct nl_cb *cb,
-			      int (*func)(struct nl_handle *, struct nl_cb *))
+			      int (*func)(struct nl_sock *, struct nl_cb *))
 {
 	cb->cb_recvmsgs_ow = func;
 }
@@ -425,7 +373,7 @@ void nl_cb_overwrite_recvmsgs(struct nl_cb *cb,
  * @arg func		replacement callback for nl_recv()
  */
 void nl_cb_overwrite_recv(struct nl_cb *cb,
-			  int (*func)(struct nl_handle *, struct sockaddr_nl *,
+			  int (*func)(struct nl_sock *, struct sockaddr_nl *,
 				      unsigned char **, struct ucred **))
 {
 	cb->cb_recv_ow = func;
@@ -437,7 +385,7 @@ void nl_cb_overwrite_recv(struct nl_cb *cb,
  * @arg func		replacement callback for nl_send()
  */
 void nl_cb_overwrite_send(struct nl_cb *cb,
-			  int (*func)(struct nl_handle *, struct nl_msg *))
+			  int (*func)(struct nl_sock *, struct nl_msg *))
 {
 	cb->cb_send_ow = func;
 }

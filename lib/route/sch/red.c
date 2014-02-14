@@ -6,7 +6,7 @@
  *	License as published by the Free Software Foundation version 2.1
  *	of the License.
  *
- * Copyright (c) 2003-2006 Thomas Graf <tgraf@suug.ch>
+ * Copyright (c) 2003-2008 Thomas Graf <tgraf@suug.ch>
  */
 
 /**
@@ -66,11 +66,11 @@ static int red_msg_parser(struct rtnl_qdisc *qdisc)
 		return err;
 
 	if (!tb[TCA_RED_PARMS])
-		return nl_error(EINVAL, "Missing TCA_RED_PARMS");
+		return -NLE_MISSING_ATTR;
 
 	red = red_alloc(qdisc);
 	if (!red)
-		return nl_errno(ENOMEM);
+		return -NLE_NOMEM;
 
 	opts = nla_data(tb[TCA_RED_PARMS]);
 
@@ -89,40 +89,31 @@ static int red_msg_parser(struct rtnl_qdisc *qdisc)
 	return 0;
 }
 
-static int red_dump_brief(struct rtnl_qdisc *qdisc, struct nl_dump_params *p,
-			  int line)
+static void red_dump_line(struct rtnl_qdisc *qdisc, struct nl_dump_params *p)
 {
 	struct rtnl_red *red = red_qdisc(qdisc);
 
 	if (red) {
 		/* XXX: limit, min, max, flags */
 	}
-
-	return line;
 }
 
-static int red_dump_full(struct rtnl_qdisc *qdisc, struct nl_dump_params *p,
-			 int line)
+static void red_dump_details(struct rtnl_qdisc *qdisc, struct nl_dump_params *p)
 {
 	struct rtnl_red *red = red_qdisc(qdisc);
 
 	if (red) {
 		/* XXX: wlog, plog, scell_log */
 	}
-
-	return line;
 }
 
-static int red_dump_stats(struct rtnl_qdisc *qdisc, struct nl_dump_params *p,
-			  int line)
+static void red_dump_stats(struct rtnl_qdisc *qdisc, struct nl_dump_params *p)
 {
 	struct rtnl_red *red = red_qdisc(qdisc);
 
 	if (red) {
 		/* XXX: xstats */
 	}
-
-	return line;
 }
 
 static struct nl_msg *red_get_opts(struct rtnl_qdisc *qdisc)
@@ -171,7 +162,7 @@ int rtnl_red_set_limit(struct rtnl_qdisc *qdisc, int limit)
 
 	red = red_alloc(qdisc);
 	if (!red)
-		return nl_errno(ENOMEM);
+		return -NLE_NOMEM;
 
 	red->qr_limit = limit;
 	red->qr_mask |= RED_ATTR_LIMIT;
@@ -192,7 +183,7 @@ int rtnl_red_get_limit(struct rtnl_qdisc *qdisc)
 	if (red && (red->qr_mask & RED_ATTR_LIMIT))
 		return red->qr_limit;
 	else
-		return nl_errno(ENOENT);
+		return -NLE_NOATTR;
 }
 
 /** @} */
@@ -200,9 +191,11 @@ int rtnl_red_get_limit(struct rtnl_qdisc *qdisc)
 static struct rtnl_qdisc_ops red_ops = {
 	.qo_kind		= "red",
 	.qo_msg_parser		= red_msg_parser,
-	.qo_dump[NL_DUMP_BRIEF]	= red_dump_brief,
-	.qo_dump[NL_DUMP_FULL]	= red_dump_full,
-	.qo_dump[NL_DUMP_STATS]	= red_dump_stats,
+	.qo_dump = {
+	    [NL_DUMP_LINE]	= red_dump_line,
+	    [NL_DUMP_DETAILS]	= red_dump_details,
+	    [NL_DUMP_STATS]	= red_dump_stats,
+	},
 	.qo_get_opts		= red_get_opts,
 };
 

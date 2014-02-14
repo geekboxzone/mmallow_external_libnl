@@ -6,7 +6,7 @@
  *	License as published by the Free Software Foundation version 2.1
  *	of the License.
  *
- * Copyright (c) 2003-2006 Thomas Graf <tgraf@suug.ch>
+ * Copyright (c) 2003-2008 Thomas Graf <tgraf@suug.ch>
  */
 
 #ifndef NETLINK_LOCAL_TYPES_H_
@@ -22,11 +22,12 @@
 #define NL_SOCK_PASSCRED	(1<<1)
 #define NL_OWN_PORT		(1<<2)
 #define NL_MSG_PEEK		(1<<3)
+#define NL_NO_AUTO_ACK		(1<<4)
 
 #define NL_MSG_CRED_PRESENT 1
 
 struct nl_cache_ops;
-struct nl_handle;
+struct nl_sock;
 struct nl_object;
 
 struct nl_cb
@@ -39,34 +40,34 @@ struct nl_cb
 
 	/** May be used to replace nl_recvmsgs with your own implementation
 	 * in all internal calls to nl_recvmsgs. */
-	int			(*cb_recvmsgs_ow)(struct nl_handle *,
+	int			(*cb_recvmsgs_ow)(struct nl_sock *,
 						  struct nl_cb *);
 
 	/** Overwrite internal calls to nl_recv, must return the number of
 	 * octets read and allocate a buffer for the received data. */
-	int			(*cb_recv_ow)(struct nl_handle *,
+	int			(*cb_recv_ow)(struct nl_sock *,
 					      struct sockaddr_nl *,
 					      unsigned char **,
 					      struct ucred **);
 
 	/** Overwrites internal calls to nl_send, must send the netlink
 	 * message. */
-	int			(*cb_send_ow)(struct nl_handle *,
+	int			(*cb_send_ow)(struct nl_sock *,
 					      struct nl_msg *);
 
 	int			cb_refcnt;
 };
 
-struct nl_handle
+struct nl_sock
 {
-	struct sockaddr_nl	h_local;
-	struct sockaddr_nl	h_peer;
-	int			h_fd;
-	int			h_proto;
-	unsigned int		h_seq_next;
-	unsigned int		h_seq_expect;
-	int			h_flags;
-	struct nl_cb *		h_cb;
+	struct sockaddr_nl	s_local;
+	struct sockaddr_nl	s_peer;
+	int			s_fd;
+	int			s_proto;
+	unsigned int		s_seq_next;
+	unsigned int		s_seq_expect;
+	int			s_flags;
+	struct nl_cb *		s_cb;
 };
 
 struct nl_cache
@@ -82,6 +83,7 @@ struct nl_cache_assoc
 {
 	struct nl_cache *	ca_cache;
 	change_func_t		ca_change;
+	void *			ca_change_data;
 };
 
 struct nl_cache_mngr
@@ -89,22 +91,13 @@ struct nl_cache_mngr
 	int			cm_protocol;
 	int			cm_flags;
 	int			cm_nassocs;
-	struct nl_handle *	cm_handle;
+	struct nl_sock *	cm_handle;
 	struct nl_cache_assoc *	cm_assocs;
 };
 
 struct nl_parser_param;
 
-struct genl_info
-{
-	struct sockaddr_nl *	who;
-	struct nlmsghdr *	nlh;
-	struct genlmsghdr *	genlhdr;
-	void *			userhdr;
-	struct nlattr **	attrs;
-};
-
-#define LOOSE_FLAG_COMPARISON	1
+#define LOOSE_COMPARISON	1
 
 #define NL_OBJ_MARK		1
 
@@ -138,6 +131,7 @@ struct nl_msg
 	struct ucred		nm_creds;
 	struct nlmsghdr *	nm_nlh;
 	size_t			nm_size;
+	int			nm_refcnt;
 };
 
 struct rtnl_link_map
@@ -244,11 +238,6 @@ struct rtnl_addr
 	uint32_t a_flag_mask;
 };
 
-#define NEXTHOP_HAS_FLAGS   0x000001
-#define NEXTHOP_HAS_WEIGHT  0x000002
-#define NEXTHOP_HAS_IFINDEX 0x000004
-#define NEXTHOP_HAS_GATEWAY 0x000008
-
 struct rtnl_nexthop
 {
 	uint8_t			rtnh_flags;
@@ -257,9 +246,9 @@ struct rtnl_nexthop
 	/* 1 byte spare */
 	uint32_t		rtnh_ifindex;
 	struct nl_addr *	rtnh_gateway;
-	uint32_t		rtnh_mask;
-
+	uint32_t		ce_mask; /* HACK to support attr macros */
 	struct nl_list_head	rtnh_list;
+	uint32_t		rtnh_realms;
 };
 
 struct rtnl_route
@@ -270,24 +259,22 @@ struct rtnl_route
 	uint8_t			rt_dst_len;
 	uint8_t			rt_src_len;
 	uint8_t			rt_tos;
-	uint8_t			rt_table;
 	uint8_t			rt_protocol;
 	uint8_t			rt_scope;
 	uint8_t			rt_type;
+	uint8_t			rt_nmetrics;
 	uint32_t		rt_flags;
 	struct nl_addr *	rt_dst;
 	struct nl_addr *	rt_src;
-	char			rt_iif[IFNAMSIZ];
-	uint32_t		rt_oif;
-	struct nl_addr *	rt_gateway;
+	uint32_t		rt_table;
+	uint32_t		rt_iif;
 	uint32_t		rt_prio;
 	uint32_t		rt_metrics[RTAX_MAX];
 	uint32_t		rt_metrics_mask;
+	uint32_t		rt_nr_nh;
 	struct nl_addr *	rt_pref_src;
 	struct nl_list_head	rt_nexthops;
-	realm_t			rt_realms;
 	struct rtnl_rtcacheinfo	rt_cacheinfo;
-	uint32_t		rt_mp_algo;
 	uint32_t		rt_flag_mask;
 };
 
@@ -467,7 +454,7 @@ struct rtnl_tstats
 	struct nl_data *	pre ##_opts;		\
 	uint64_t		pre ##_stats[RTNL_TC_STATS_MAX+1]; \
 	struct nl_data *	pre ##_xstats;		\
-	void *			pre ##_subdata;		\
+	struct nl_data *	pre ##_subdata;		\
 
 
 struct rtnl_tca
@@ -490,8 +477,8 @@ struct rtnl_class
 struct rtnl_cls
 {
 	NL_TCA_GENERIC(c);
-	uint32_t	c_prio;
-	uint32_t	c_protocol;
+	uint16_t		c_prio;
+	uint16_t		c_protocol;
 	struct rtnl_cls_ops	*c_ops;
 };
 
@@ -509,6 +496,12 @@ struct rtnl_u32
 	int			cu_mask;
 };
 
+struct rtnl_cgroup
+{
+	struct rtnl_ematch_tree *cg_ematch;
+	int			cg_mask;
+};
+
 struct rtnl_fw
 {
 	uint32_t		cf_classid;
@@ -516,6 +509,26 @@ struct rtnl_fw
 	struct nl_data *	cf_police;
 	char			cf_indev[IFNAMSIZ];
 	int			cf_mask;
+};
+
+struct rtnl_ematch
+{
+	uint16_t		e_id;
+	uint16_t		e_kind;
+	uint16_t		e_flags;
+
+	struct nl_list_head	e_childs;
+	struct nl_list_head	e_list;
+	struct rtnl_ematch_ops *e_ops;
+
+	char			e_data[0];
+};
+
+struct rtnl_ematch_tree
+{
+	uint16_t		et_progid;
+	struct nl_list_head	et_list;
+
 };
 
 struct rtnl_dsmark_qdisc
@@ -582,6 +595,18 @@ struct rtnl_netem_reo
 	uint32_t	nmro_correlation;
 };
 
+struct rtnl_netem_crpt
+{
+	uint32_t	nmcr_probability;
+	uint32_t	nmcr_correlation;
+};
+
+struct rtnl_netem_dist
+{
+	int16_t	*	dist_data;
+	size_t		dist_size;
+};
+
 struct rtnl_netem
 {
 	uint32_t		qnm_latency;
@@ -593,6 +618,8 @@ struct rtnl_netem
 	uint32_t		qnm_mask;
 	struct rtnl_netem_corr	qnm_corr;
 	struct rtnl_netem_reo	qnm_ro;
+	struct rtnl_netem_crpt	qnm_crpt;
+	struct rtnl_netem_dist  qnm_dist;
 };
 
 struct rtnl_htb_qdisc
@@ -736,23 +763,67 @@ struct nfnl_ct {
 struct nfnl_log {
 	NLHDR_COMMON
 
-	uint8_t			log_family;
-	uint8_t			log_hook;
-	uint16_t		log_hwproto;
-	uint32_t		log_mark;
-	struct timeval		log_timestamp;
-	uint32_t		log_indev;
-	uint32_t		log_outdev;
-	uint32_t		log_physindev;
-	uint32_t		log_physoutdev;
-	uint8_t			log_hwaddr[8];
-	int			log_hwaddr_len;
-	void *			log_payload;
-	int			log_payload_len;
-	char *			log_prefix;
-	uint32_t		log_uid;
-	uint32_t		log_seq;
-	uint32_t		log_seq_global;
+	uint16_t		log_group;
+	uint8_t			log_copy_mode;
+	uint32_t		log_copy_range;
+	uint32_t		log_flush_timeout;
+	uint32_t		log_alloc_size;
+	uint32_t		log_queue_threshold;
+	uint32_t		log_flags;
+	uint32_t		log_flag_mask;
+};
+
+struct nfnl_log_msg {
+	NLHDR_COMMON
+
+	uint8_t			log_msg_family;
+	uint8_t			log_msg_hook;
+	uint16_t		log_msg_hwproto;
+	uint32_t		log_msg_mark;
+	struct timeval		log_msg_timestamp;
+	uint32_t		log_msg_indev;
+	uint32_t		log_msg_outdev;
+	uint32_t		log_msg_physindev;
+	uint32_t		log_msg_physoutdev;
+	uint8_t			log_msg_hwaddr[8];
+	int			log_msg_hwaddr_len;
+	void *			log_msg_payload;
+	int			log_msg_payload_len;
+	char *			log_msg_prefix;
+	uint32_t		log_msg_uid;
+	uint32_t		log_msg_gid;
+	uint32_t		log_msg_seq;
+	uint32_t		log_msg_seq_global;
+};
+
+struct nfnl_queue {
+	NLHDR_COMMON
+
+	uint16_t		queue_group;
+	uint32_t		queue_maxlen;
+	uint32_t		queue_copy_range;
+	uint8_t			queue_copy_mode;
+};
+
+struct nfnl_queue_msg {
+	NLHDR_COMMON
+
+	uint16_t		queue_msg_group;
+	uint8_t			queue_msg_family;
+	uint8_t			queue_msg_hook;
+	uint16_t		queue_msg_hwproto;
+	uint32_t		queue_msg_packetid;
+	uint32_t		queue_msg_mark;
+	struct timeval		queue_msg_timestamp;
+	uint32_t		queue_msg_indev;
+	uint32_t		queue_msg_outdev;
+	uint32_t		queue_msg_physindev;
+	uint32_t		queue_msg_physoutdev;
+	uint8_t			queue_msg_hwaddr[8];
+	int			queue_msg_hwaddr_len;
+	void *			queue_msg_payload;
+	int			queue_msg_payload_len;
+	uint32_t		queue_msg_verdict;
 };
 
 #endif

@@ -1,76 +1,116 @@
 /*
- * src/nl-qdisc-delete.c     Delete Qdiscs
+ * src/nl-qdisc-delete.c     Delete Queuing Disciplines
  *
  *	This library is free software; you can redistribute it and/or
  *	modify it under the terms of the GNU Lesser General Public
  *	License as published by the Free Software Foundation version 2.1
  *	of the License.
  *
- * Copyright (c) 2003-2006 Thomas Graf <tgraf@suug.ch>
+ * Copyright (c) 2003-2009 Thomas Graf <tgraf@suug.ch>
  */
 
-#include "utils.h"
+#include <netlink/cli/utils.h>
+#include <netlink/cli/qdisc.h>
+#include <netlink/cli/link.h>
+
+static int quiet = 0, default_yes = 0, deleted = 0, interactive = 0;
+struct nl_sock *sock;
 
 static void print_usage(void)
 {
-	printf("Usage: nl-qdisc-delete <ifindex> <parent> <handle>\n");
-	exit(1);
+	printf(
+	"Usage: nl-qdisc-delete [OPTION]... [QDISC]\n"
+	"\n"
+	"Options\n"
+	" -i, --interactive     Run interactively\n"
+	"     --yes             Set default answer to yes\n"
+	" -q, --quiet           Do not print informal notifications\n"
+	" -h, --help            Show this help\n"
+	" -v, --version         Show versioning information\n"
+	"\n"
+	"QDisc Options\n"
+	" -d, --dev=DEV         Device the qdisc is attached to\n"
+	" -p, --parent=HANDLE   Identifier of parent qdisc\n"
+	" -H, --handle=HANDLE   Identifier\n"
+	" -k, --kind=NAME       Kind of qdisc (e.g. pfifo_fast)\n"
+	);
+
+	exit(0);
+}
+
+static void delete_cb(struct nl_object *obj, void *arg)
+{
+	struct rtnl_qdisc *qdisc = nl_object_priv(obj);
+	struct nl_dump_params params = {
+		.dp_type = NL_DUMP_LINE,
+		.dp_fd = stdout,
+	};
+	int err;
+
+	if (interactive && !nl_cli_confirm(obj, &params, default_yes))
+		return;
+
+	if ((err = rtnl_qdisc_delete(sock, qdisc)) < 0)
+		nl_cli_fatal(err, "Unable to delete qdisc: %s\n", nl_geterror(err));
+
+	if (!quiet) {
+		printf("Deleted ");
+		nl_object_dump(obj, &params);
+	}
+
+	deleted++;
 }
 
 int main(int argc, char *argv[])
 {
-	struct nl_handle *nlh;
 	struct rtnl_qdisc *qdisc;
-	uint32_t handle, parent;
-	int err = 1;
+	struct nl_cache *link_cache, *qdisc_cache;
+ 
+	sock = nl_cli_alloc_socket();
+	nl_cli_connect(sock, NETLINK_ROUTE);
+	link_cache = nl_cli_link_alloc_cache(sock);
+	qdisc_cache = nl_cli_qdisc_alloc_cache(sock);
+ 	qdisc = nl_cli_qdisc_alloc();
+ 
+	for (;;) {
+		int c, optidx = 0;
+		enum {
+			ARG_YES = 257,
+		};
+		static struct option long_opts[] = {
+			{ "interactive", 0, 0, 'i' },
+			{ "yes", 0, 0, ARG_YES },
+			{ "quiet", 0, 0, 'q' },
+			{ "help", 0, 0, 'h' },
+			{ "version", 0, 0, 'v' },
+			{ "dev", 1, 0, 'd' },
+			{ "parent", 1, 0, 'p' },
+			{ "handle", 1, 0, 'H' },
+			{ "kind", 1, 0, 'k' },
+			{ 0, 0, 0, 0 }
+		};
+	
+		c = getopt_long(argc, argv, "iqhvd:p:H:k:", long_opts, &optidx);
+		if (c == -1)
+			break;
 
-	if (nltool_init(argc, argv) < 0)
-		return -1;
-
-	if (argc < 3 || !strcmp(argv[1], "-h"))
-		print_usage();
-
-	nlh = nltool_alloc_handle();
-	if (!nlh)
-		goto errout;
-
-	qdisc = rtnl_qdisc_alloc();
-	if (!qdisc)
-		goto errout_free_handle;
-
-	rtnl_qdisc_set_ifindex(qdisc, strtoul(argv[1], NULL, 0));
-
-	if (rtnl_tc_str2handle(argv[2], &parent) < 0) {
-		fprintf(stderr, "%s\n", nl_geterror());
-		goto errout_free_qdisc;
-	}
-
-	if (argc > 3) {
-		if (rtnl_tc_str2handle(argv[3], &handle) < 0) {
-			fprintf(stderr, "%s\n", nl_geterror());
-			goto errout_free_qdisc;
+		switch (c) {
+		case 'i': interactive = 1; break;
+		case ARG_YES: default_yes = 1; break;
+		case 'q': quiet = 1; break;
+		case 'h': print_usage(); break;
+		case 'v': nl_cli_print_version(); break;
+		case 'd': nl_cli_qdisc_parse_dev(qdisc, link_cache, optarg); break;
+		case 'p': nl_cli_qdisc_parse_parent(qdisc, optarg); break;
+		case 'H': nl_cli_qdisc_parse_handle(qdisc, optarg); break;
+		case 'k': nl_cli_qdisc_parse_kind(qdisc, optarg); break;
 		}
+ 	}
 
-		rtnl_qdisc_set_handle(qdisc, handle);
-	}
+	nl_cache_foreach_filter(qdisc_cache, OBJ_CAST(qdisc), delete_cb, NULL);
 
-	rtnl_qdisc_set_parent(qdisc, parent);
+	if (!quiet)
+		printf("Deleted %d qdiscs\n", deleted);
 
-	if (nltool_connect(nlh, NETLINK_ROUTE) < 0)
-		goto errout_free_qdisc;
-
-	if (rtnl_qdisc_delete(nlh, qdisc) < 0) {
-		fprintf(stderr, "Unable to delete Qdisc: %s\n", nl_geterror());
-		goto errout_close;
-	}
-
-	err = 0;
-errout_close:
-	nl_close(nlh);
-errout_free_qdisc:
-	rtnl_qdisc_put(qdisc);
-errout_free_handle:
-	nl_handle_destroy(nlh);
-errout:
-	return err;
+	return 0;
 }

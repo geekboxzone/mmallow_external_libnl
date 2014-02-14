@@ -6,17 +6,27 @@
  *	License as published by the Free Software Foundation version 2.1
  *	of the License.
  *
- * Copyright (c) 2003-2006 Thomas Graf <tgraf@suug.ch>
+ * Copyright (c) 2003-2008 Thomas Graf <tgraf@suug.ch>
  * Copyright (c) 2007 Philip Craig <philipc@snapgear.com>
  * Copyright (c) 2007 Secure Computing Corporation
  */
 
-#include <sys/types.h>
+#include <netlink/cli/utils.h>
+#include <netlink/cli/link.h>
 #include <linux/netfilter/nfnetlink_log.h>
-
-#include "utils.h"
 #include <netlink/netfilter/nfnl.h>
 #include <netlink/netfilter/log.h>
+
+static struct nfnl_log *alloc_log(void)
+{
+	struct nfnl_log *log;
+
+	log = nfnl_log_alloc();
+	if (!log)
+		nl_cli_fatal(ENOMEM, "Unable to allocate log object");
+
+	return log;
+}
 
 static void obj_input(struct nl_object *obj, void *arg)
 {
@@ -40,74 +50,73 @@ static int event_input(struct nl_msg *msg, void *arg)
 
 int main(int argc, char *argv[])
 {
-	struct nl_handle *nfnlh;
-	struct nl_handle *rtnlh;
+	struct nl_sock *nf_sock;
+	struct nl_sock *rt_sock;
         struct nl_cache *link_cache;
-	int err = 1;
-	int family, group;
+	struct nfnl_log *log;
+	enum nfnl_log_copy_mode copy_mode;
+	uint32_t copy_range;
+	int err;
+	int family;
 
-	if (nltool_init(argc, argv) < 0)
-		return -1;
-
-	nfnlh = nltool_alloc_handle();
-	if (nfnlh == NULL)
-		return -1;
-
-	nl_disable_sequence_check(nfnlh);
-
-	nl_socket_modify_cb(nfnlh, NL_CB_VALID, NL_CB_CUSTOM, event_input, NULL);
+	nf_sock = nl_cli_alloc_socket();
+	nl_socket_disable_seq_check(nf_sock);
+	nl_socket_modify_cb(nf_sock, NL_CB_VALID, NL_CB_CUSTOM, event_input, NULL);
 
 	if ((argc > 1 && !strcasecmp(argv[1], "-h")) || argc < 3) {
-		printf("Usage: nf-log family group\n");
+		printf("Usage: nf-log family group [ copy_mode ] "
+		       "[copy_range] \n");
 		return 2;
 	}
 
-	if (nfnl_connect(nfnlh) < 0) {
-		fprintf(stderr, "%s\n", nl_geterror());
-		goto errout;
-	}
+	nl_cli_connect(nf_sock, NETLINK_NETFILTER);
 
 	family = nl_str2af(argv[1]);
-	if (family == AF_UNSPEC) {
-		fprintf(stderr, "Unknown family: %s\n", argv[1]);
-		goto errout;
+	if (family == AF_UNSPEC)
+		nl_cli_fatal(NLE_INVAL, "Unknown family \"%s\": %s",
+			     argv[1], nl_geterror(family));
+
+	nfnl_log_pf_unbind(nf_sock, family);
+	if ((err = nfnl_log_pf_bind(nf_sock, family)) < 0)
+		nl_cli_fatal(err, "Unable to bind logger: %s",
+			     nl_geterror(err));
+
+	log = alloc_log();
+	nfnl_log_set_group(log, atoi(argv[2]));
+
+	copy_mode = NFNL_LOG_COPY_META;
+	if (argc > 3) {
+		copy_mode = nfnl_log_str2copy_mode(argv[3]);
+		if (copy_mode < 0)
+			nl_cli_fatal(copy_mode,
+				     "Unable to parse copy mode \"%s\": %s",
+				     argv[3], nl_geterror(copy_mode));
 	}
-	if (nfnl_log_pf_unbind(nfnlh, family) < 0) {
-		fprintf(stderr, "%s\n", nl_geterror());
-		goto errout;
-	}
-	if (nfnl_log_pf_bind(nfnlh, family) < 0) {
-		fprintf(stderr, "%s\n", nl_geterror());
-		goto errout;
+	nfnl_log_set_copy_mode(log, copy_mode);
+
+	copy_range = 0xFFFF;
+	if (argc > 4)
+		copy_mode = atoi(argv[4]);
+	nfnl_log_set_copy_range(log, copy_range);
+
+	if ((err = nfnl_log_create(nf_sock, log)) < 0)
+		nl_cli_fatal(err, "Unable to bind instance: %s",
+			     nl_geterror(err));
+
+	{
+		struct nl_dump_params dp = {
+			.dp_type = NL_DUMP_STATS,
+			.dp_fd = stdout,
+			.dp_dump_msgtype = 1,
+		};
+
+		printf("log params: ");
+		nl_object_dump((struct nl_object *) log, &dp);
 	}
 
-	group = nl_str2af(argv[2]);
-	if (nfnl_log_bind(nfnlh, group) < 0) {
-		fprintf(stderr, "%s\n", nl_geterror());
-		goto errout;
-	}
-
-	if (nfnl_log_set_mode(nfnlh, 0, NFULNL_COPY_PACKET, 0xffff) < 0) {
-		fprintf(stderr, "%s\n", nl_geterror());
-		goto errout;
-	}
-
-	rtnlh = nltool_alloc_handle();
-	if (rtnlh == NULL) {
-		goto errout_close;
-	}
-
-	if (nl_connect(rtnlh, NETLINK_ROUTE) < 0) {
-		fprintf(stderr, "%s\n", nl_geterror());
-		goto errout;
-	}
-
-	if ((link_cache = rtnl_link_alloc_cache(rtnlh)) == NULL) {
-		fprintf(stderr, "%s\n", nl_geterror());
-		goto errout_close;
-	}
-
-	nl_cache_mngt_provide(link_cache);
+	rt_sock = nl_cli_alloc_socket();
+	nl_cli_connect(rt_sock, NETLINK_ROUTE);
+	link_cache = nl_cli_link_alloc_cache(rt_sock);
 
 	while (1) {
 		fd_set rfds;
@@ -115,28 +124,24 @@ int main(int argc, char *argv[])
 
 		FD_ZERO(&rfds);
 
-		maxfd = nffd = nl_socket_get_fd(nfnlh);
+		maxfd = nffd = nl_socket_get_fd(nf_sock);
 		FD_SET(nffd, &rfds);
 
-		rtfd = nl_socket_get_fd(rtnlh);
+		rtfd = nl_socket_get_fd(rt_sock);
 		FD_SET(rtfd, &rfds);
 		if (maxfd < rtfd)
 			maxfd = rtfd;
 
-		/* wait for an incoming message on the netlink socket */
+		/* wait for an incoming message on the netlink nf_socket */
 		retval = select(maxfd+1, &rfds, NULL, NULL, NULL);
 
 		if (retval) {
 			if (FD_ISSET(nffd, &rfds))
-				nl_recvmsgs_default(nfnlh);
+				nl_recvmsgs_default(nf_sock);
 			if (FD_ISSET(rtfd, &rfds))
-				nl_recvmsgs_default(rtnlh);
+				nl_recvmsgs_default(rt_sock);
 		}
 	}
 
-	nl_close(rtnlh);
-errout_close:
-	nl_close(nfnlh);
-errout:
-	return err;
+	return 0;
 }

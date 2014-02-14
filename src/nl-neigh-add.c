@@ -6,74 +6,105 @@
  *	License as published by the Free Software Foundation version 2.1
  *	of the License.
  *
- * Copyright (c) 2003-2006 Thomas Graf <tgraf@suug.ch>
+ * Copyright (c) 2003-2009 Thomas Graf <tgraf@suug.ch>
  */
 
-#include "utils.h"
+#include <netlink/cli/utils.h>
+#include <netlink/cli/neigh.h>
+#include <netlink/cli/link.h>
+
+static int quiet = 0;
+
+static void print_usage(void)
+{
+	printf(
+	"Usage: nl-neigh-add [OPTION]... NEIGHBOUR\n"
+	"\n"
+	"Options\n"
+	"     --update-only     Do not create neighbour, updates exclusively\n"
+	"     --create-only     Do not update neighbour if it exists already.\n"
+	" -q, --quiet           Do not print informal notifications\n"
+	" -h, --help            Show this help\n"
+	" -v, --version         Show versioning information\n"
+	"\n"
+	"Neighbour Options\n"
+	" -a, --addr=ADDR       Destination address of neighbour\n"
+	" -l, --lladdr=ADDR     Link layer address of neighbour\n"
+	" -d, --dev=DEV         Device the neighbour is connected to\n"
+	"     --state=STATE     Neighbour state, (default = permanent)\n"
+	"\n"
+	"Example\n"
+	"  nl-neigh-add --create-only --addr=10.0.0.1 --dev=eth0 \\\n"
+	"               --lladdr=AA:BB:CC:DD:EE:FF\n"
+	);
+
+	exit(0);
+}
 
 int main(int argc, char *argv[])
 {
-	struct nl_handle *nlh;
+	struct nl_sock *sock;
 	struct rtnl_neigh *neigh;
-	struct nl_addr *addr;
-	int err = 1;
+	struct nl_cache *link_cache;
+	struct nl_dump_params dp = {
+		.dp_type = NL_DUMP_LINE,
+		.dp_fd = stdout,
+	};
+	int err, ok = 0, nlflags = NLM_F_REPLACE | NLM_F_CREATE;
+ 
+	sock = nl_cli_alloc_socket();
+	nl_cli_connect(sock, NETLINK_ROUTE);
+	link_cache = nl_cli_link_alloc_cache(sock);
+ 	neigh = nl_cli_neigh_alloc();
+ 
+	for (;;) {
+		int c, optidx = 0;
+		enum {
+			ARG_UPDATE_ONLY = 257,
+			ARG_CREATE_ONLY = 258,
+			ARG_STATE,
+		};
+		static struct option long_opts[] = {
+			{ "update-only", 0, 0, ARG_UPDATE_ONLY },
+			{ "create-only", 0, 0, ARG_CREATE_ONLY },
+			{ "quiet", 0, 0, 'q' },
+			{ "help", 0, 0, 'h' },
+			{ "version", 0, 0, 'v' },
+			{ "addr", 1, 0, 'a' },
+			{ "lladdr", 1, 0, 'l' },
+			{ "dev", 1, 0, 'd' },
+			{ "state", 1, 0, ARG_STATE },
+			{ 0, 0, 0, 0 }
+		};
+	
+		c = getopt_long(argc, argv, "qhva:l:d:", long_opts, &optidx);
+		if (c == -1)
+			break;
 
-	if (nltool_init(argc, argv) < 0)
-		return -1;
-
-	if (argc < 4 || !strcmp(argv[1], "-h")) {
-		printf("Usage: nl-neigh-add <addr> <lladdr> "
-		       "<ifindex> [<state>]\n");
-		return 1;
-	}
-
-	nlh = nltool_alloc_handle();
-	if (!nlh)
-		return -1;
-
-	neigh = rtnl_neigh_alloc();
-	if (!neigh)
-		goto errout;
-
-	if (nltool_connect(nlh, NETLINK_ROUTE) < 0)
-		goto errout_free;
-
-	addr = nltool_addr_parse(argv[1]);
-	if (!addr)
-		goto errout_close;
-	rtnl_neigh_set_dst(neigh, addr);
-	nl_addr_put(addr);
-
-	addr = nltool_addr_parse(argv[2]);
-	if (!addr)
-		goto errout_close;
-	rtnl_neigh_set_lladdr(neigh, addr);
-	nl_addr_put(addr);
-
-	rtnl_neigh_set_ifindex(neigh, strtoul(argv[3], NULL, 0));
-
-	if (argc > 4) {
-		int state = rtnl_neigh_str2state(argv[4]);
-		if (state < 0) {
-			fprintf(stderr, "Unknown state \"%s\"\n", argv[4]);
-			goto errout_close;
+		switch (c) {
+		case ARG_UPDATE_ONLY: nlflags &= ~NLM_F_CREATE; break;
+		case ARG_CREATE_ONLY: nlflags |= NLM_F_EXCL; break;
+		case 'q': quiet = 1; break;
+		case 'h': print_usage(); break;
+		case 'v': nl_cli_print_version(); break;
+		case 'a': ok++; nl_cli_neigh_parse_dst(neigh, optarg); break;
+		case 'l': nl_cli_neigh_parse_lladdr(neigh, optarg); break;
+		case 'd': nl_cli_neigh_parse_dev(neigh, link_cache, optarg); break;
+		case ARG_STATE: nl_cli_neigh_parse_state(neigh, optarg); break;
 		}
-		rtnl_neigh_set_state(neigh, state);
-	} else
-		rtnl_neigh_set_state(neigh, NUD_PERMANENT);
+ 	}
 
-	if (rtnl_neigh_add(nlh, neigh, 0) < 0) {
-		fprintf(stderr, "Unable to add address: %s\n", nl_geterror());
-		goto errout_close;
-	}
+	if (!ok)
+		print_usage();
 
-	err = 0;
+	if ((err = rtnl_neigh_add(sock, neigh, nlflags)) < 0)
+		nl_cli_fatal(err, "Unable to add neighbour: %s",
+			     nl_geterror(err));
 
-errout_close:
-	nl_close(nlh);
-errout_free:
-	rtnl_neigh_put(neigh);
-errout:
-	nl_handle_destroy(nlh);
-	return err;
+	if (!quiet) {
+		printf("Added ");
+		nl_object_dump(OBJ_CAST(neigh), &dp);
+ 	}
+
+	return 0;
 }

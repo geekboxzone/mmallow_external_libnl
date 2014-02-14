@@ -6,13 +6,12 @@
  *	License as published by the Free Software Foundation version 2.1
  *	of the License.
  *
- * Copyright (c) 2003-2006 Thomas Graf <tgraf@suug.ch>
+ * Copyright (c) 2003-2008 Thomas Graf <tgraf@suug.ch>
  * Copyright (c) 2007 Philip Craig <philipc@snapgear.com>
  * Copyright (c) 2007 Secure Computing Corporation
  */
 
 /**
- * @ingroup nlfam
  * @defgroup nfnl Netfilter Netlink
  *
  * @par Message Format
@@ -47,7 +46,7 @@
  * nla_put_u32(msg, 1, 0x10);
  *
  * // Message is ready to be sent.
- * nl_send_auto_complete(nl_handle, msg);
+ * nl_send_auto_complete(sk, msg);
  *
  * // All done? Free the message.
  * nlmsg_free(msg);
@@ -57,7 +56,7 @@
  * @code
  * // For trivial messages not requiring any subsys specific header or
  * // attributes, nfnl_send_simple() may be used to send messages directly.
- * nfnl_send_simple(nl_handle, SUBSYS, TYPE, 0, FAMILY, RES_ID);
+ * nfnl_send_simple(sk, SUBSYS, TYPE, 0, FAMILY, RES_ID);
  * @endcode
  * @{
  */
@@ -73,7 +72,7 @@
 
 /**
  * Create and connect netfilter netlink socket.
- * @arg handle		Netlink handle.
+ * @arg sk		Netlink socket.
  *
  * Creates a NETLINK_NETFILTER netlink socket, binds the socket and
  * issues a connection attempt.
@@ -82,9 +81,9 @@
  *
  * @return 0 on success or a negative error code.
  */
-int nfnl_connect(struct nl_handle *handle)
+int nfnl_connect(struct nl_sock *sk)
 {
-	return nl_connect(handle, NETLINK_NETFILTER);
+	return nl_connect(sk, NETLINK_NETFILTER);
 }
 
 /** @} */
@@ -96,7 +95,7 @@ int nfnl_connect(struct nl_handle *handle)
 
 /**
  * Send trivial netfilter netlink message
- * @arg handle		Netlink handle.
+ * @arg sk		Netlink socket.
  * @arg subsys_id	nfnetlink subsystem
  * @arg type		nfnetlink message type
  * @arg flags		message flags
@@ -105,7 +104,7 @@ int nfnl_connect(struct nl_handle *handle)
  *
  * @return Newly allocated netlink message or NULL.
  */
-int nfnl_send_simple(struct nl_handle *handle, uint8_t subsys_id, uint8_t type,
+int nfnl_send_simple(struct nl_sock *sk, uint8_t subsys_id, uint8_t type,
 		     int flags, uint8_t family, uint16_t res_id)
 {
 	struct nfgenmsg hdr = {
@@ -114,7 +113,7 @@ int nfnl_send_simple(struct nl_handle *handle, uint8_t subsys_id, uint8_t type,
 		.res_id = htons(res_id),
 	};
 
-	return nl_send_simple(handle, NFNLMSG_TYPE(subsys_id, type), flags,
+	return nl_send_simple(sk, NFNLMSG_TYPE(subsys_id, type), flags,
 			      &hdr, sizeof(hdr));
 }
 
@@ -178,7 +177,7 @@ static int nfnlmsg_append(struct nl_msg *msg, uint8_t family, uint16_t res_id)
 
 	nfg = nlmsg_reserve(msg, sizeof(*nfg), NLMSG_ALIGNTO);
 	if (nfg == NULL)
-		return nl_errno(ENOMEM);
+		return -NLE_NOMEM;
 
 	nfg->nfgen_family = family;
 	nfg->version = NFNETLINK_V0;
@@ -236,7 +235,7 @@ int nfnlmsg_put(struct nl_msg *msg, uint32_t pid, uint32_t seq,
 
 	nlh = nlmsg_put(msg, pid, seq, NFNLMSG_TYPE(subsys_id, type), 0, flags);
 	if (nlh == NULL)
-		return nl_get_errno();
+		return -NLE_MSGSIZE;
 
 	return nfnlmsg_append(msg, family, res_id);
 }
