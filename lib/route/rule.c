@@ -6,7 +6,7 @@
  *	License as published by the Free Software Foundation version 2.1
  *	of the License.
  *
- * Copyright (c) 2003-2006 Thomas Graf <tgraf@suug.ch>
+ * Copyright (c) 2003-2008 Thomas Graf <tgraf@suug.ch>
  */
 
 /**
@@ -60,15 +60,13 @@ static int rule_clone(struct nl_object *_dst, struct nl_object *_src)
 
 	if (src->r_src)
 		if (!(dst->r_src = nl_addr_clone(src->r_src)))
-			goto errout;
+			return -NLE_NOMEM;
 
 	if (src->r_dst)
 		if (!(dst->r_dst = nl_addr_clone(src->r_dst)))
-			goto errout;
+			return -NLE_NOMEM;
 
 	return 0;
-errout:
-	return nl_get_errno();
 }
 
 static struct nla_policy rule_policy[RTA_MAX+1] = {
@@ -85,11 +83,11 @@ static int rule_msg_parser(struct nl_cache_ops *ops, struct sockaddr_nl *who,
 	struct rtnl_rule *rule;
 	struct rtmsg *r;
 	struct nlattr *tb[RTA_MAX+1];
-	int err = 1;
+	int err = 1, family;
 
 	rule = rtnl_rule_alloc();
 	if (!rule) {
-		err = nl_errno(ENOMEM);
+		err = -NLE_NOMEM;
 		goto errout;
 	}
 
@@ -100,14 +98,15 @@ static int rule_msg_parser(struct nl_cache_ops *ops, struct sockaddr_nl *who,
 	if (err < 0)
 		goto errout;
 
-	rule->r_family = r->rtm_family;
+	rule->r_family = family = r->rtm_family;
 	rule->r_type = r->rtm_type;
 	rule->r_dsfield = r->rtm_tos;
 	rule->r_src_len = r->rtm_src_len;
 	rule->r_dst_len = r->rtm_dst_len;
 	rule->r_table = r->rtm_table;
 	rule->ce_mask = (RULE_ATTR_FAMILY | RULE_ATTR_TYPE | RULE_ATTR_DSFIELD |
-			 RULE_ATTR_SRC_LEN | RULE_ATTR_DST_LEN |RULE_ATTR_TYPE);
+			 RULE_ATTR_SRC_LEN | RULE_ATTR_DST_LEN |RULE_ATTR_TYPE |
+			 RULE_ATTR_TABLE);
 
 	if (tb[RTA_PRIORITY]) {
 		rule->r_prio = nla_get_u32(tb[RTA_PRIORITY]);
@@ -115,21 +114,15 @@ static int rule_msg_parser(struct nl_cache_ops *ops, struct sockaddr_nl *who,
 	}
 
 	if (tb[RTA_SRC]) {
-		rule->r_src = nla_get_addr(tb[RTA_SRC], r->rtm_family);
-		if (!rule->r_src) {
-			err = nl_errno(ENOMEM);
-			goto errout;
-		}
+		if (!(rule->r_src = nl_addr_alloc_attr(tb[RTA_SRC], family)))
+			goto errout_enomem;
 		nl_addr_set_prefixlen(rule->r_src, r->rtm_src_len);
 		rule->ce_mask |= RULE_ATTR_SRC;
 	}
 
 	if (tb[RTA_DST]) {
-		rule->r_dst = nla_get_addr(tb[RTA_DST], r->rtm_family);
-		if (!rule->r_dst) {
-			err = nl_errno(ENOMEM);
-			goto errout;
-		}
+		if (!(rule->r_dst = nl_addr_alloc_attr(tb[RTA_DST], family)))
+			goto errout_enomem;
 		nl_addr_set_prefixlen(rule->r_dst, r->rtm_dst_len);
 		rule->ce_mask |= RULE_ATTR_DST;
 	}
@@ -150,216 +143,135 @@ static int rule_msg_parser(struct nl_cache_ops *ops, struct sockaddr_nl *who,
 	}
 
 	if (tb[RTA_GATEWAY]) {
-		rule->r_srcmap = nla_get_addr(tb[RTA_GATEWAY], r->rtm_family);
-		if (!rule->r_srcmap) {
-			err = nl_errno(ENOMEM);
-			goto errout;
-		}
+		rule->r_srcmap = nl_addr_alloc_attr(tb[RTA_GATEWAY], family);
+		if (!rule->r_srcmap)
+			goto errout_enomem;
 		rule->ce_mask |= RULE_ATTR_SRCMAP;
 	}
 
+	if (tb[RTA_TABLE]) {
+            rule->r_table = nla_get_u32(tb[RTA_TABLE]);
+            rule->ce_mask |= RULE_ATTR_TABLE;
+        }
+
 	err = pp->pp_cb((struct nl_object *) rule, pp);
-	if (err < 0)
-		goto errout;
-
-	err = P_ACCEPT;
-
 errout:
 	rtnl_rule_put(rule);
 	return err;
+
+errout_enomem:
+	err = -NLE_NOMEM;
+	goto errout;
 }
 
-static int rule_request_update(struct nl_cache *c, struct nl_handle *h)
+static int rule_request_update(struct nl_cache *c, struct nl_sock *h)
 {
 	return nl_rtgen_request(h, RTM_GETRULE, AF_UNSPEC, NLM_F_DUMP);
 }
 
-static int rule_dump_brief(struct nl_object *o, struct nl_dump_params *p)
+static void rule_dump_line(struct nl_object *o, struct nl_dump_params *p)
 {
 	struct rtnl_rule *r = (struct rtnl_rule *) o;
 	char buf[128];
 
-	if (r->ce_mask & RULE_ATTR_PRIO)
-		dp_dump(p, "%d:\t", r->r_prio);
-	else
-		dp_dump(p, "0:\t");
+	nl_dump_line(p, "%8d ", (r->ce_mask & RULE_ATTR_PRIO) ? r->r_prio : 0);
+	nl_dump(p, "%s ", nl_af2str(r->r_family, buf, sizeof(buf)));
 
 	if (r->ce_mask & RULE_ATTR_SRC)
-		dp_dump(p, "from %s ",
+		nl_dump(p, "from %s ",
 			nl_addr2str(r->r_src, buf, sizeof(buf)));
 	else if (r->ce_mask & RULE_ATTR_SRC_LEN && r->r_src_len)
-		dp_dump(p, "from 0/%d ", r->r_src_len);
+		nl_dump(p, "from 0/%d ", r->r_src_len);
 
 	if (r->ce_mask & RULE_ATTR_DST)
-		dp_dump(p, "to %s ",
+		nl_dump(p, "to %s ",
 			nl_addr2str(r->r_dst, buf, sizeof(buf)));
 	else if (r->ce_mask & RULE_ATTR_DST_LEN && r->r_dst_len)
-		dp_dump(p, "to 0/%d ", r->r_dst_len);
+		nl_dump(p, "to 0/%d ", r->r_dst_len);
 
 	if (r->ce_mask & RULE_ATTR_DSFIELD && r->r_dsfield)
-		dp_dump(p, "tos %d ", r->r_dsfield);
+		nl_dump(p, "tos %d ", r->r_dsfield);
 
 	if (r->ce_mask & RULE_ATTR_MARK)
-		dp_dump(p, "mark %" PRIx64 , r->r_mark);
+		nl_dump(p, "mark %" PRIx64 , r->r_mark);
 
 	if (r->ce_mask & RULE_ATTR_IIF)
-		dp_dump(p, "iif %s ", r->r_iif);
+		nl_dump(p, "iif %s ", r->r_iif);
 
 	if (r->ce_mask & RULE_ATTR_TABLE)
-		dp_dump(p, "lookup %s ",
+		nl_dump(p, "lookup %s ",
 			rtnl_route_table2str(r->r_table, buf, sizeof(buf)));
 
 	if (r->ce_mask & RULE_ATTR_REALMS)
-		dp_dump(p, "realms %s ",
+		nl_dump(p, "realms %s ",
 			rtnl_realms2str(r->r_realms, buf, sizeof(buf)));
 
-	dp_dump(p, "action %s\n",
+	nl_dump(p, "action %s\n",
 		nl_rtntype2str(r->r_type, buf, sizeof(buf)));
-
-	return 1;
 }
 
-static int rule_dump_full(struct nl_object *obj, struct nl_dump_params *p)
+static void rule_dump_details(struct nl_object *obj, struct nl_dump_params *p)
 {
 	struct rtnl_rule *rule = (struct rtnl_rule *) obj;
 	char buf[128];
-	int line;
 
-	line = rule_dump_brief(obj, p);
-
-	dp_dump_line(p, line++, "  family %s",
-		     nl_af2str(rule->r_family, buf, sizeof(buf)));
+	rule_dump_line(obj, p);
 
 	if (rule->ce_mask & RULE_ATTR_SRCMAP)
-		dp_dump(p, " srcmap %s",
+		nl_dump_line(p, "  srcmap %s\n",
 			nl_addr2str(rule->r_srcmap, buf, sizeof(buf)));
-
-	dp_dump(p, "\n");
-
-	return line;
 }
 
-static int rule_dump_stats(struct nl_object *obj, struct nl_dump_params *p)
+static void rule_dump_stats(struct nl_object *obj, struct nl_dump_params *p)
 {
-	return rule_dump_full(obj, p);
+	rule_dump_details(obj, p);
 }
 
-static int rule_dump_xml(struct nl_object *obj, struct nl_dump_params *p)
+static void rule_dump_env(struct nl_object *obj, struct nl_dump_params *p)
 {
 	struct rtnl_rule *rule = (struct rtnl_rule *) obj;
 	char buf[128];
-	int line = 0;
-	
-	dp_dump_line(p, line++, "<rule>\n");
 
-	dp_dump_line(p, line++, "  <priority>%u</priority>\n",
-		     rule->r_prio);
-	dp_dump_line(p, line++, "  <family>%s</family>\n",
+	nl_dump_line(p, "RULE_PRIORITY=%u\n", rule->r_prio);
+	nl_dump_line(p, "RULE_FAMILY=%s\n",
 		     nl_af2str(rule->r_family, buf, sizeof(buf)));
 
 	if (rule->ce_mask & RULE_ATTR_DST)
-		dp_dump_line(p, line++, "  <dst>%s</dst>\n",
+		nl_dump_line(p, "RULE_DST=%s\n",
 			     nl_addr2str(rule->r_dst, buf, sizeof(buf)));
 
 	if (rule->ce_mask & RULE_ATTR_DST_LEN)
-		dp_dump_line(p, line++, "  <dstlen>%u</dstlen>\n",
-			     rule->r_dst_len);
+		nl_dump_line(p, "RULE_DSTLEN=%u\n", rule->r_dst_len);
 
 	if (rule->ce_mask & RULE_ATTR_SRC)
-		dp_dump_line(p, line++, "  <src>%s</src>\n",
+		nl_dump_line(p, "RULE_SRC=%s\n",
 			     nl_addr2str(rule->r_src, buf, sizeof(buf)));
 
 	if (rule->ce_mask & RULE_ATTR_SRC_LEN)
-		dp_dump_line(p, line++, "  <srclen>%u</srclen>\n",
-			     rule->r_src_len);
+		nl_dump_line(p, "RULE_SRCLEN=%u\n", rule->r_src_len);
 
 	if (rule->ce_mask & RULE_ATTR_IIF)
-		dp_dump_line(p, line++, "  <iif>%s</iif>\n", rule->r_iif);
+		nl_dump_line(p, "RULE_IIF=%s\n", rule->r_iif);
 
 	if (rule->ce_mask & RULE_ATTR_TABLE)
-		dp_dump_line(p, line++, "  <table>%u</table>\n",
-			     rule->r_table);
+		nl_dump_line(p, "RULE_TABLE=%u\n", rule->r_table);
 
 	if (rule->ce_mask & RULE_ATTR_REALMS)
-		dp_dump_line(p, line++, "  <realms>%u</realms>\n",
-			     rule->r_realms);
+		nl_dump_line(p, "RULE_REALM=%u\n", rule->r_realms);
 
 	if (rule->ce_mask & RULE_ATTR_MARK)
-		dp_dump_line(p, line++, "  <mark>%" PRIx64 "</mark>\n",
-			     rule->r_mark);
+		nl_dump_line(p, "RULE_MARK=0x%" PRIx64 "\n", rule->r_mark);
 
 	if (rule->ce_mask & RULE_ATTR_DSFIELD)
-		dp_dump_line(p, line++, "  <dsfield>%u</dsfield>\n",
-			     rule->r_dsfield);
+		nl_dump_line(p, "RULE_DSFIELD=%u\n", rule->r_dsfield);
 
 	if (rule->ce_mask & RULE_ATTR_TYPE)
-		dp_dump_line(p, line++, "<type>%s</type>\n",
+		nl_dump_line(p, "RULE_TYPE=%s\n",
 			     nl_rtntype2str(rule->r_type, buf, sizeof(buf)));
 
 	if (rule->ce_mask & RULE_ATTR_SRCMAP)
-		dp_dump_line(p, line++, "<srcmap>%s</srcmap>\n",
+		nl_dump_line(p, "RULE_SRCMAP=%s\n",
 			     nl_addr2str(rule->r_srcmap, buf, sizeof(buf)));
-
-	dp_dump_line(p, line++, "</rule>\n");
-
-	return line;
-}
-
-static int rule_dump_env(struct nl_object *obj, struct nl_dump_params *p)
-{
-	struct rtnl_rule *rule = (struct rtnl_rule *) obj;
-	char buf[128];
-	int line = 0;
-
-	dp_dump_line(p, line++, "RULE_PRIORITY=%u\n",
-		     rule->r_prio);
-	dp_dump_line(p, line++, "RULE_FAMILY=%s\n",
-		     nl_af2str(rule->r_family, buf, sizeof(buf)));
-
-	if (rule->ce_mask & RULE_ATTR_DST)
-		dp_dump_line(p, line++, "RULE_DST=%s\n",
-			     nl_addr2str(rule->r_dst, buf, sizeof(buf)));
-
-	if (rule->ce_mask & RULE_ATTR_DST_LEN)
-		dp_dump_line(p, line++, "RULE_DSTLEN=%u\n",
-			     rule->r_dst_len);
-
-	if (rule->ce_mask & RULE_ATTR_SRC)
-		dp_dump_line(p, line++, "RULE_SRC=%s\n",
-			     nl_addr2str(rule->r_src, buf, sizeof(buf)));
-
-	if (rule->ce_mask & RULE_ATTR_SRC_LEN)
-		dp_dump_line(p, line++, "RULE_SRCLEN=%u\n",
-			     rule->r_src_len);
-
-	if (rule->ce_mask & RULE_ATTR_IIF)
-		dp_dump_line(p, line++, "RULE_IIF=%s\n", rule->r_iif);
-
-	if (rule->ce_mask & RULE_ATTR_TABLE)
-		dp_dump_line(p, line++, "RULE_TABLE=%u\n",
-			     rule->r_table);
-
-	if (rule->ce_mask & RULE_ATTR_REALMS)
-		dp_dump_line(p, line++, "RULE_REALM=%u\n",
-			     rule->r_realms);
-
-	if (rule->ce_mask & RULE_ATTR_MARK)
-		dp_dump_line(p, line++, "RULE_MARK=0x%" PRIx64 "\n",
-			     rule->r_mark);
-
-	if (rule->ce_mask & RULE_ATTR_DSFIELD)
-		dp_dump_line(p, line++, "RULE_DSFIELD=%u\n",
-			     rule->r_dsfield);
-
-	if (rule->ce_mask & RULE_ATTR_TYPE)
-		dp_dump_line(p, line++, "RULE_TYPE=%s\n",
-			     nl_rtntype2str(rule->r_type, buf, sizeof(buf)));
-
-	if (rule->ce_mask & RULE_ATTR_SRCMAP)
-		dp_dump_line(p, line++, "RULE_SRCMAP=%s\n",
-			     nl_addr2str(rule->r_srcmap, buf, sizeof(buf)));
-
-	return line;
 }
 
 static int rule_compare(struct nl_object *_a, struct nl_object *_b,
@@ -434,51 +346,34 @@ void rtnl_rule_put(struct rtnl_rule *rule)
  */
 
 /**
- * Build a rule cache including all rules of the specified family currently configured in the kernel.
- * @arg handle		netlink handle
- * @arg family		address family
- *
- * Allocates a new rule cache, initializes it properly and updates it
- * to include all rules of the specified address family currently
- * configured in the kernel.
- *
- * @note The caller is responsible for destroying and freeing the
- *       cache after using it. (nl_cache_destroy_and_free())
- * @return The new cache or NULL if an error occured.
- */
-struct nl_cache * rtnl_rule_alloc_cache_by_family(struct nl_handle *handle,
-						  int family)
-{
-	struct nl_cache * cache;
-
-	cache = nl_cache_alloc(&rtnl_rule_ops);
-	if (cache == NULL)
-		return NULL;
-
-	/* XXX RULE_CACHE_FAMILY(cache) = family; */
-
-	if (handle && nl_cache_refill(handle, cache) < 0) {
-		free(cache);
-		return NULL;
-	}
-
-	return cache;
-}
-
-/**
  * Build a rule cache including all rules currently configured in the kernel.
- * @arg handle		netlink handle
+ * @arg sk		Netlink socket.
+ * @arg family		Address family or AF_UNSPEC.
+ * @arg result		Pointer to store resulting cache.
  *
  * Allocates a new rule cache, initializes it properly and updates it
  * to include all rules currently configured in the kernel.
  *
- * @note The caller is responsible for destroying and freeing the
- *       cache after using it. (nl_cache_destroy_and_free())
- * @return The new cache or NULL if an error occured.
+ * @return 0 on success or a negative error code.
  */
-struct nl_cache * rtnl_rule_alloc_cache(struct nl_handle *handle)
+int rtnl_rule_alloc_cache(struct nl_sock *sock, int family,
+			  struct nl_cache **result)
 {
-	return rtnl_rule_alloc_cache_by_family(handle, AF_UNSPEC);
+	struct nl_cache * cache;
+	int err;
+
+	if (!(cache = nl_cache_alloc(&rtnl_rule_ops)))
+		return -NLE_NOMEM;
+
+	cache->c_iarg1 = family;
+
+	if (sock && (err = nl_cache_refill(sock, cache)) < 0) {
+		free(cache);
+		return err;
+	}
+
+	*result = cache;
+	return 0;
 }
 
 /** @} */
@@ -488,7 +383,8 @@ struct nl_cache * rtnl_rule_alloc_cache(struct nl_handle *handle)
  * @{
  */
 
-static struct nl_msg *build_rule_msg(struct rtnl_rule *tmpl, int cmd, int flags)
+static int build_rule_msg(struct rtnl_rule *tmpl, int cmd, int flags,
+			  struct nl_msg **result)
 {
 	struct nl_msg *msg;
 	struct rtmsg rtm = {
@@ -518,7 +414,7 @@ static struct nl_msg *build_rule_msg(struct rtnl_rule *tmpl, int cmd, int flags)
 
 	msg = nlmsg_alloc_simple(cmd, flags);
 	if (!msg)
-		goto nla_put_failure;
+		return -NLE_NOMEM;
 
 	if (nlmsg_append(msg, &rtm, sizeof(rtm), NLMSG_ALIGNTO) < 0)
 		goto nla_put_failure;
@@ -541,11 +437,12 @@ static struct nl_msg *build_rule_msg(struct rtnl_rule *tmpl, int cmd, int flags)
 	if (tmpl->ce_mask & RULE_ATTR_IIF)
 		NLA_PUT_STRING(msg, RTA_IIF, tmpl->r_iif);
 
-	return msg;
+	*result = msg;
+	return 0;
 
 nla_put_failure:
 	nlmsg_free(msg);
-	return NULL;
+	return -NLE_MSGSIZE;
 }
 
 /**
@@ -561,14 +458,16 @@ nla_put_failure:
  * 
  * @return The netlink message
  */
-struct nl_msg *rtnl_rule_build_add_request(struct rtnl_rule *tmpl, int flags)
+int rtnl_rule_build_add_request(struct rtnl_rule *tmpl, int flags,
+				struct nl_msg **result)
 {
-	return build_rule_msg(tmpl, RTM_NEWRULE, NLM_F_CREATE | flags);
+	return build_rule_msg(tmpl, RTM_NEWRULE, NLM_F_CREATE | flags,
+			      result);
 }
 
 /**
  * Add a new rule
- * @arg handle		netlink handle
+ * @arg sk		Netlink socket.
  * @arg tmpl		template with requested changes
  * @arg flags		additional netlink message flags
  *
@@ -578,21 +477,20 @@ struct nl_msg *rtnl_rule_build_add_request(struct rtnl_rule *tmpl, int flags)
  *
  * @return 0 on sucess or a negative error if an error occured.
  */
-int rtnl_rule_add(struct nl_handle *handle, struct rtnl_rule *tmpl, int flags)
+int rtnl_rule_add(struct nl_sock *sk, struct rtnl_rule *tmpl, int flags)
 {
-	int err;
 	struct nl_msg *msg;
+	int err;
 	
-	msg = rtnl_rule_build_add_request(tmpl, flags);
-	if (!msg)
-		return nl_errno(ENOMEM);
+	if ((err = rtnl_rule_build_add_request(tmpl, flags, &msg)) < 0)
+		return err;
 
-	err = nl_send_auto_complete(handle, msg);
+	err = nl_send_auto_complete(sk, msg);
+	nlmsg_free(msg);
 	if (err < 0)
 		return err;
 
-	nlmsg_free(msg);
-	return nl_wait_for_ack(handle);
+	return wait_for_ack(sk);
 }
 
 /** @} */
@@ -615,14 +513,15 @@ int rtnl_rule_add(struct nl_handle *handle, struct rtnl_rule *tmpl, int flags)
  *
  * @return The netlink message
  */
-struct nl_msg *rtnl_rule_build_delete_request(struct rtnl_rule *rule, int flags)
+int rtnl_rule_build_delete_request(struct rtnl_rule *rule, int flags,
+				   struct nl_msg **result)
 {
-	return build_rule_msg(rule, RTM_DELRULE, flags);
+	return build_rule_msg(rule, RTM_DELRULE, flags, result);
 }
 
 /**
  * Delete a rule
- * @arg handle		netlink handle
+ * @arg sk		Netlink socket.
  * @arg rule		rule to delete
  * @arg flags		additional netlink message flags
  *
@@ -632,22 +531,20 @@ struct nl_msg *rtnl_rule_build_delete_request(struct rtnl_rule *rule, int flags)
  *
  * @return 0 on sucess or a negative error if an error occured.
  */
-int rtnl_rule_delete(struct nl_handle *handle, struct rtnl_rule *rule,
-		     int flags)
+int rtnl_rule_delete(struct nl_sock *sk, struct rtnl_rule *rule, int flags)
 {
-	int err;
 	struct nl_msg *msg;
+	int err;
 	
-	msg = rtnl_rule_build_delete_request(rule, flags);
-	if (!msg)
-		return nl_errno(ENOMEM);
+	if ((err = rtnl_rule_build_delete_request(rule, flags, &msg)) < 0)
+		return err;
 
-	err = nl_send_auto_complete(handle, msg);
+	err = nl_send_auto_complete(sk, msg);
+	nlmsg_free(msg);
 	if (err < 0)
 		return err;
 
-	nlmsg_free(msg);
-	return nl_wait_for_ack(handle);
+	return wait_for_ack(sk);
 }
 
 /** @} */
@@ -764,7 +661,7 @@ static inline int __assign_addr(struct rtnl_rule *rule, struct nl_addr **pos,
 {
 	if (rule->ce_mask & RULE_ATTR_FAMILY) {
 		if (new->a_family != rule->r_family)
-			return nl_error(EINVAL, "Address family mismatch");
+			return -NLE_AF_MISMATCH;
 	} else
 		rule->r_family = new->a_family;
 
@@ -811,7 +708,7 @@ struct nl_addr *rtnl_rule_get_dst(struct rtnl_rule *rule)
 int rtnl_rule_set_iif(struct rtnl_rule *rule, const char *dev)
 {
 	if (strlen(dev) > IFNAMSIZ-1)
-		return nl_errno(ERANGE);
+		return -NLE_RANGE;
 
 	strcpy(rule->r_iif, dev);
 	rule->ce_mask |= RULE_ATTR_IIF;
@@ -837,16 +734,16 @@ int rtnl_rule_get_action(struct rtnl_rule *rule)
 	if (rule->ce_mask & RULE_ATTR_TYPE)
 		return rule->r_type;
 	else
-		return nl_errno(ENOENT);
+		return -NLE_NOATTR;
 }
 
-void rtnl_rule_set_realms(struct rtnl_rule *rule, realm_t realms)
+void rtnl_rule_set_realms(struct rtnl_rule *rule, uint32_t realms)
 {
 	rule->r_realms = realms;
 	rule->ce_mask |= RULE_ATTR_REALMS;
 }
 
-realm_t rtnl_rule_get_realms(struct rtnl_rule *rule)
+uint32_t rtnl_rule_get_realms(struct rtnl_rule *rule)
 {
 	if (rule->ce_mask & RULE_ATTR_REALMS)
 		return rule->r_realms;
@@ -861,11 +758,12 @@ static struct nl_object_ops rule_obj_ops = {
 	.oo_size		= sizeof(struct rtnl_rule),
 	.oo_free_data		= rule_free_data,
 	.oo_clone		= rule_clone,
-	.oo_dump[NL_DUMP_BRIEF]	= rule_dump_brief,
-	.oo_dump[NL_DUMP_FULL]	= rule_dump_full,
-	.oo_dump[NL_DUMP_STATS]	= rule_dump_stats,
-	.oo_dump[NL_DUMP_XML]	= rule_dump_xml,
-	.oo_dump[NL_DUMP_ENV]	= rule_dump_env,
+	.oo_dump = {
+	    [NL_DUMP_LINE]	= rule_dump_line,
+	    [NL_DUMP_DETAILS]	= rule_dump_details,
+	    [NL_DUMP_STATS]	= rule_dump_stats,
+	    [NL_DUMP_ENV]	= rule_dump_env,
+	},
 	.oo_compare		= rule_compare,
 	.oo_attrs2str		= rule_attrs2str,
 	.oo_id_attrs		= ~0,

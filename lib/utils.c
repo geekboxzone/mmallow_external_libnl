@@ -6,10 +6,11 @@
  *	License as published by the Free Software Foundation version 2.1
  *	of the License.
  *
- * Copyright (c) 2003-2006 Thomas Graf <tgraf@suug.ch>
+ * Copyright (c) 2003-2008 Thomas Graf <tgraf@suug.ch>
  */
 
 /**
+ * @ingroup core
  * @defgroup utils Utilities
  * @{
  */
@@ -25,7 +26,7 @@
 int nl_debug = 0;
 
 struct nl_dump_params nl_debug_dp = {
-	.dp_type = NL_DUMP_FULL,
+	.dp_type = NL_DUMP_DETAILS,
 };
 
 static void __init nl_debug_init(void)
@@ -41,48 +42,6 @@ static void __init nl_debug_init(void)
 	nl_debug_dp.dp_fd = stderr;
 }
 
-/**
- * @name Error Code Helpers
- * @{
- */
-
-static char *errbuf;
-static int nlerrno;
-
-/** @cond SKIP */
-int __nl_error(int err, const char *file, unsigned int line, const char *func,
-	       const char *fmt, ...)
-{
-	char *user_err;
-	va_list args;
-
-	if (errbuf) {
-		free(errbuf);
-		errbuf = NULL;
-	}
-
-	nlerrno = err;
-
-	if (fmt) {
-		va_start(args, fmt);
-		vasprintf(&user_err, fmt, args);
-		va_end(args);
-	}
-
-#ifdef VERBOSE_ERRORS
-	asprintf(&errbuf, "%s:%u:%s: %s (errno = %s)",
-		 file, line, func, fmt ? user_err : "", strerror(err));
-#else
-	asprintf(&errbuf, "%s (errno = %s)",
-		 fmt ? user_err : "", strerror(err));
-#endif
-
-	if (fmt)
-		free(user_err);
-
-	return -err;
-}
-
 int __nl_read_num_str_file(const char *path, int (*cb)(long, const char *))
 {
 	FILE *fd;
@@ -90,8 +49,7 @@ int __nl_read_num_str_file(const char *path, int (*cb)(long, const char *))
 
 	fd = fopen(path, "r");
 	if (fd == NULL)
-		return nl_error(errno, "Unable to open file %s for reading",
-				path);
+		return -nl_syserr2nlerr(errno);
 
 	while (fgets(buf, sizeof(buf), fd)) {
 		int goodlen, err;
@@ -103,17 +61,17 @@ int __nl_read_num_str_file(const char *path, int (*cb)(long, const char *))
 
 		num = strtol(buf, &end, 0);
 		if (end == buf)
-			return nl_error(EINVAL, "Parsing error");
+			return -NLE_INVAL;
 
 		if (num == LONG_MIN || num == LONG_MAX)
-			return nl_error(errno, "Number of out range");
+			return -NLE_RANGE;
 
 		while (*end == ' ' || *end == '\t')
 			end++;
 
 		goodlen = strcspn(end, "#\r\n\t ");
 		if (goodlen == 0)
-			return nl_error(EINVAL, "Empty string");
+			return -NLE_INVAL;
 
 		end[goodlen] = '\0';
 
@@ -126,49 +84,6 @@ int __nl_read_num_str_file(const char *path, int (*cb)(long, const char *))
 
 	return 0;
 }
-
-/** @endcond */
-
-int nl_get_errno(void)
-{
-	return nlerrno;
-}
-
-
-/**
- * Return error message for an error code
- * @return error message
- */
-char *nl_geterror(void)
-{
-	if (errbuf)
-		return errbuf;
-
-	if (nlerrno)
-		return strerror(nlerrno);
-
-	return "Sucess\n";
-}
-
-/**
- * Print a libnl error message
- * @arg s		error message prefix
- *
- * Prints the error message of the call that failed last.
- *
- * If s is not NULL and *s is not a null byte the argument
- * string is printed, followed by a colon and a blank. Then
- * the error message and a new-line.
- */
-void nl_perror(const char *s)
-{
-	if (s && *s)
-		fprintf(stderr, "%s: %s\n", s, nl_geterror());
-	else
-		fprintf(stderr, "%s\n", nl_geterror());
-}
-
-/** @} */
 
 /**
  * @name Unit Pretty-Printing
@@ -285,7 +200,7 @@ long nl_size2int(const char *str)
 	char *p;
 	long l = strtol(str, &p, 0);
 	if (p == str)
-		return -1;
+		return -NLE_INVAL;
 
 	if (*p) {
 		if (!strcasecmp(p, "kb") || !strcasecmp(p, "k"))
@@ -303,7 +218,7 @@ long nl_size2int(const char *str)
 		else if (!strcasecmp(p, "bit"))
 			l /= 8;
 		else if (strcasecmp(p, "b") != 0)
-			return -1;
+			return -NLE_INVAL;
 	}
 
 	return l;
@@ -328,16 +243,16 @@ long nl_prob2int(const char *str)
 	double d = strtod(str, &p);
 
 	if (p == str)
-		return -1;
+		return -NLE_INVAL;
 
 	if (d > 1.0)
 		d /= 100.0f;
 
 	if (d > 1.0f || d < 0.0f)
-		return -1;
+		return -NLE_RANGE;
 
 	if (*p && strcmp(p, "%") != 0)
-		return -1;
+		return -NLE_INVAL;
 
 	return rint(d * NL_PROB_MAX);
 }
@@ -370,7 +285,7 @@ static void __init get_psched_settings(void)
 {
 	char name[FILENAME_MAX];
 	FILE *fd;
-	int got_hz = 0, got_tick = 0;
+	int got_hz = 0;
 
 	if (getenv("HZ")) {
 		long hz = strtol(getenv("HZ"), NULL, 0);
@@ -386,28 +301,25 @@ static void __init get_psched_settings(void)
 
 	if (getenv("TICKS_PER_USEC")) {
 		double t = strtod(getenv("TICKS_PER_USEC"), NULL);
-
 		ticks_per_usec = t;
-		got_tick = 1;
 	}
+	else {
+		if (getenv("PROC_NET_PSCHED"))
+			snprintf(name, sizeof(name), "%s", getenv("PROC_NET_PSCHED"));
+		else if (getenv("PROC_ROOT"))
+			snprintf(name, sizeof(name), "%s/net/psched",
+				 getenv("PROC_ROOT"));
+		else
+			strncpy(name, "/proc/net/psched", sizeof(name) - 1);
 		
-
-	if (getenv("PROC_NET_PSCHED"))
-		snprintf(name, sizeof(name), "%s", getenv("PROC_NET_PSCHED"));
-	else if (getenv("PROC_ROOT"))
-		snprintf(name, sizeof(name), "%s/net/psched",
-			 getenv("PROC_ROOT"));
-	else
-		strncpy(name, "/proc/net/psched", sizeof(name) - 1);
-
-	if ((fd = fopen(name, "r"))) {
-		uint32_t tick, us, nom;
-		int r = fscanf(fd, "%08x%08x%08x%*08x", &tick, &us, &nom);
-
-		if (4 == r && nom == 1000000 && !got_tick)
+		if ((fd = fopen(name, "r"))) {
+			uint32_t tick, us;
+			/* the file contains 4 hexadecimals, but we just use
+			   the first two of them */
+			fscanf(fd, "%08x %08x", &tick, &us);
 			ticks_per_usec = (double)tick/(double)us;
-			
-		fclose(fd);
+			fclose(fd);
+		}
 	}
 }
 
@@ -442,25 +354,40 @@ uint32_t nl_ticks2us(uint32_t ticks)
 	return ticks / ticks_per_usec;
 }
 
-long nl_time2int(const char *str)
+int nl_str2msec(const char *str, uint64_t *result)
 {
+	uint64_t total = 0, l;
+	int plen;
 	char *p;
-	long l = strtol(str, &p, 0);
-	if (p == str)
-		return -1;
 
-	if (*p) {
-		if (!strcasecmp(p, "min") == 0 || !strcasecmp(p, "m"))
-			l *= 60;
-		else if (!strcasecmp(p, "hour") || !strcasecmp(p, "h"))
-			l *= 60*60;
-		else if (!strcasecmp(p, "day") || !strcasecmp(p, "d"))
-			l *= 60*60*24;
-		else if (strcasecmp(p, "s") != 0)
-			return -1;
-	}
+	do {
+		l = strtoul(str, &p, 0);
+		if (p == str)
+			return -NLE_INVAL;
+		else if (*p) {
+			plen = strcspn(p, " \t");
 
-	return l;
+			if (!plen)
+				total += l;
+			else if (!strncasecmp(p, "sec", plen))
+				total += (l * 1000);
+			else if (!strncasecmp(p, "min", plen))
+				total += (l * 1000*60);
+			else if (!strncasecmp(p, "hour", plen))
+				total += (l * 1000*60*60);
+			else if (!strncasecmp(p, "day", plen))
+				total += (l * 1000*60*60*24);
+			else
+				return -NLE_INVAL;
+
+			str = p + plen;
+		} else
+			total += l;
+	} while (*str && *p);
+
+	*result = total;
+
+	return 0;
 }
 
 /**
@@ -503,6 +430,47 @@ char * nl_msec2str(uint64_t msec, char *buf, size_t len)
 }
 
 /** @} */
+
+/**
+ * @name Netlink Family Translations
+ * @{
+ */
+
+static struct trans_tbl nlfamilies[] = {
+	__ADD(NETLINK_ROUTE,route)
+	__ADD(NETLINK_USERSOCK,usersock)
+	__ADD(NETLINK_FIREWALL,firewall)
+	__ADD(NETLINK_INET_DIAG,inetdiag)
+	__ADD(NETLINK_NFLOG,nflog)
+	__ADD(NETLINK_XFRM,xfrm)
+	__ADD(NETLINK_SELINUX,selinux)
+	__ADD(NETLINK_ISCSI,iscsi)
+	__ADD(NETLINK_AUDIT,audit)
+	__ADD(NETLINK_FIB_LOOKUP,fib_lookup)
+	__ADD(NETLINK_CONNECTOR,connector)
+	__ADD(NETLINK_NETFILTER,netfilter)
+	__ADD(NETLINK_IP6_FW,ip6_fw)
+	__ADD(NETLINK_DNRTMSG,dnrtmsg)
+	__ADD(NETLINK_KOBJECT_UEVENT,kobject_uevent)
+	__ADD(NETLINK_GENERIC,generic)
+	__ADD(NETLINK_SCSITRANSPORT,scsitransport)
+	__ADD(NETLINK_ECRYPTFS,ecryptfs)
+};
+
+char * nl_nlfamily2str(int family, char *buf, size_t size)
+{
+	return __type2str(family, buf, size, nlfamilies,
+			  ARRAY_SIZE(nlfamilies));
+}
+
+int nl_str2nlfamily(const char *name)
+{
+	return __str2type(name, nlfamilies, ARRAY_SIZE(nlfamilies));
+}
+
+/**
+ * @}
+ */
 
 /**
  * @name Link Layer Protocol Translations
@@ -699,7 +667,7 @@ int nl_str2ip_proto(const char *name)
 
 	l = strtoul(name, &end, 0);
 	if (l == ULONG_MAX || *end != '\0')
-		return -1;
+		return -NLE_OBJ_NOTFOUND;
 
 	return (int) l;
 }
@@ -714,7 +682,6 @@ int nl_str2ip_proto(const char *name)
 /**
  * Handle a new line while dumping
  * @arg params		Dumping parameters
- * @arg line		Number of lines dumped already.
  *
  * This function must be called before dumping any onto a
  * new line. It will ensure proper prefixing as specified
@@ -722,8 +689,10 @@ int nl_str2ip_proto(const char *name)
  *
  * @note This function will NOT dump any newlines itself
  */
-void nl_new_line(struct nl_dump_params *params, int line)
+void nl_new_line(struct nl_dump_params *params)
 {
+	params->dp_line++;
+
 	if (params->dp_prefix) {
 		int i;
 		for (i = 0; i < params->dp_prefix; i++) {
@@ -737,8 +706,26 @@ void nl_new_line(struct nl_dump_params *params, int line)
 	}
 
 	if (params->dp_nl_cb)
-		params->dp_nl_cb(params, line);
+		params->dp_nl_cb(params, params->dp_line);
 }
+
+static void dump_one(struct nl_dump_params *parms, const char *fmt,
+		     va_list args)
+{
+	if (parms->dp_fd)
+		vfprintf(parms->dp_fd, fmt, args);
+	else if (parms->dp_buf || parms->dp_cb) {
+		char *buf = NULL;
+		vasprintf(&buf, fmt, args);
+		if (parms->dp_cb)
+			parms->dp_cb(parms, buf);
+		else
+			strncat(parms->dp_buf, buf,
+			        parms->dp_buflen - strlen(parms->dp_buf) - 1);
+		free(buf);
+	}
+}
+
 
 /**
  * Dump a formatted character string
@@ -754,10 +741,195 @@ void nl_dump(struct nl_dump_params *params, const char *fmt, ...)
 	va_list args;
 
 	va_start(args, fmt);
-	__dp_dump(params, fmt, args);
+	dump_one(params, fmt, args);
 	va_end(args);
 }
 
+void nl_dump_line(struct nl_dump_params *parms, const char *fmt, ...)
+{
+	va_list args;
+
+	nl_new_line(parms);
+
+	va_start(args, fmt);
+	dump_one(parms, fmt, args);
+	va_end(args);
+}
+
+
 /** @} */
+
+/** @cond SKIP */
+
+int __trans_list_add(int i, const char *a, struct nl_list_head *head)
+{
+	struct trans_list *tl;
+
+	tl = calloc(1, sizeof(*tl));
+	if (!tl)
+		return -NLE_NOMEM;
+
+	tl->i = i;
+	tl->a = strdup(a);
+
+	nl_list_add_tail(&tl->list, head);
+
+	return 0;
+}
+
+void __trans_list_clear(struct nl_list_head *head)
+{
+	struct trans_list *tl, *next;
+
+	nl_list_for_each_entry_safe(tl, next, head, list) {
+		free(tl->a);
+		free(tl);
+	}
+}
+
+char *__type2str(int type, char *buf, size_t len, struct trans_tbl *tbl,
+		 size_t tbl_len)
+{
+	int i;
+	for (i = 0; i < tbl_len; i++) {
+		if (tbl[i].i == type) {
+			snprintf(buf, len, "%s", tbl[i].a);
+			return buf;
+		}
+	}
+
+	snprintf(buf, len, "0x%x", type);
+	return buf;
+}
+
+char *__list_type2str(int type, char *buf, size_t len,
+		      struct nl_list_head *head)
+{
+	struct trans_list *tl;
+
+	nl_list_for_each_entry(tl, head, list) {
+		if (tl->i == type) {
+			snprintf(buf, len, "%s", tl->a);
+			return buf;
+		}
+	}
+
+	snprintf(buf, len, "0x%x", type);
+	return buf;
+}
+
+char *__flags2str(int flags, char *buf, size_t len,
+		  struct trans_tbl *tbl, size_t tbl_len)
+{
+	int i;
+	int tmp = flags;
+
+	memset(buf, 0, len);
+	
+	for (i = 0; i < tbl_len; i++) {
+		if (tbl[i].i & tmp) {
+			tmp &= ~tbl[i].i;
+			strncat(buf, tbl[i].a, len - strlen(buf) - 1);
+			if ((tmp & flags))
+				strncat(buf, ",", len - strlen(buf) - 1);
+		}
+	}
+
+	return buf;
+}
+
+int __str2type(const char *buf, struct trans_tbl *tbl, size_t tbl_len)
+{
+	unsigned long l;
+	char *end;
+	int i;
+
+	if (*buf == '\0')
+		return -NLE_INVAL;
+
+	for (i = 0; i < tbl_len; i++)
+		if (!strcasecmp(tbl[i].a, buf))
+			return tbl[i].i;
+
+	l = strtoul(buf, &end, 0);
+	if (l == ULONG_MAX || *end != '\0')
+		return -NLE_OBJ_NOTFOUND;
+
+	return (int) l;
+}
+
+int __list_str2type(const char *buf, struct nl_list_head *head)
+{
+	struct trans_list *tl;
+	unsigned long l;
+	char *end;
+
+	if (*buf == '\0')
+		return -NLE_INVAL;
+
+	nl_list_for_each_entry(tl, head, list) {
+		if (!strcasecmp(tl->a, buf))
+			return tl->i;
+	}
+
+	l = strtoul(buf, &end, 0);
+	if (l == ULONG_MAX || *end != '\0')
+		return -NLE_OBJ_NOTFOUND;
+
+	return (int) l;
+}
+
+int __str2flags(const char *buf, struct trans_tbl *tbl, size_t tbl_len)
+{
+	int i, flags = 0, len;
+	char *p = (char *) buf, *t;
+
+	for (;;) {
+		if (*p == ' ')
+			p++;
+	
+		t = strchr(p, ',');
+		len = t ? t - p : strlen(p);
+		for (i = 0; i < tbl_len; i++)
+			if (!strncasecmp(tbl[i].a, p, len))
+				flags |= tbl[i].i;
+
+		if (!t)
+			return flags;
+
+		p = ++t;
+	}
+
+	return 0;
+}
+
+void dump_from_ops(struct nl_object *obj, struct nl_dump_params *params)
+{
+	int type = params->dp_type;
+
+	if (type < 0 || type > NL_DUMP_MAX)
+		BUG();
+
+	params->dp_line = 0;
+
+	if (params->dp_dump_msgtype) {
+#if 0
+		/* XXX */
+		char buf[64];
+
+		dp_dump_line(params, 0, "%s ",
+			     nl_cache_mngt_type2name(obj->ce_ops,
+			     			     obj->ce_ops->co_protocol,
+						     obj->ce_msgtype,
+						     buf, sizeof(buf)));
+#endif
+		params->dp_pre_dump = 1;
+	}
+
+	if (obj->ce_ops->oo_dump[type])
+		obj->ce_ops->oo_dump[type](obj, params);
+}
+
+/** @endcond */
 
 /** @} */

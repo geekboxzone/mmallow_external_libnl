@@ -23,15 +23,12 @@ LOCAL_SRC_FILES :=  lib/cache.c \
 	lib/genl/genl.c \
 	lib/route/rtnl.c \
 	lib/route/route_utils.c \
-	lib/netfilter/nfnl.c
+	lib/netfilter/nfnl.c \
+	lib/error.c
 
-#LOCAL_CFLAGS :=
 LOCAL_C_INCLUDES := $(LOCAL_PATH)/include
-	#kernel/android-2.6.32/include
 
 LOCAL_MODULE_TAGS := eng
 LOCAL_MODULE := libnl
 
 include $(BUILD_SHARED_LIBRARY)
-#include $(BUILD_STATIC_LIBRARY)
-

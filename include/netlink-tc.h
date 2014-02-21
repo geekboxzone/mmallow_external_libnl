@@ -6,7 +6,7 @@
  *	License as published by the Free Software Foundation version 2.1
  *	of the License.
  *
- * Copyright (c) 2003-2006 Thomas Graf <tgraf@suug.ch>
+ * Copyright (c) 2003-2008 Thomas Graf <tgraf@suug.ch>
  */
 
 #ifndef NETLINK_TC_PRIV_H_
@@ -34,11 +34,10 @@ extern int tca_parse(struct nlattr **, int, struct rtnl_tca *,
 extern int  tca_msg_parser(struct nlmsghdr *, struct rtnl_tca *);
 extern void tca_free_data(struct rtnl_tca *);
 extern int  tca_clone(struct rtnl_tca *, struct rtnl_tca *);
-extern int  tca_dump_brief(struct rtnl_tca *, const char *,
-			   struct nl_dump_params *, int);
-extern int  tca_dump_full(struct rtnl_tca *, struct nl_dump_params *, int);
-extern int  tca_dump_stats(struct rtnl_tca *,
-				struct nl_dump_params *, int);
+extern void tca_dump_line(struct rtnl_tca *, const char *,
+			  struct nl_dump_params *);
+extern void tca_dump_details(struct rtnl_tca *, struct nl_dump_params *);
+extern void tca_dump_stats(struct rtnl_tca *, struct nl_dump_params *);
 extern int  tca_compare(struct nl_object *, struct nl_object *, uint32_t, int);
 
 extern void tca_set_ifindex(struct rtnl_tca *, int);
@@ -51,7 +50,7 @@ extern void tca_set_kind(struct rtnl_tca *, const char *);
 extern char *tca_get_kind(struct rtnl_tca *);
 extern uint64_t tca_get_stat(struct rtnl_tca *, int );
 
-extern struct nl_msg *tca_build_msg(struct rtnl_tca *tca, int type, int flags);
+extern int tca_build_msg(struct rtnl_tca *, int, int, struct nl_msg **);
 
 static inline void *tca_priv(struct rtnl_tca *tca)
 {

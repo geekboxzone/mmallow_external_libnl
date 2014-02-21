@@ -6,7 +6,7 @@
  *	License as published by the Free Software Foundation version 2.1
  *	of the License.
  *
- * Copyright (c) 2003-2006 Thomas Graf <tgraf@suug.ch>
+ * Copyright (c) 2003-2008 Thomas Graf <tgraf@suug.ch>
  * Copyright (c) 2007 Philip Craig <philipc@snapgear.com>
  * Copyright (c) 2007 Secure Computing Corporation
  */
@@ -75,116 +75,199 @@ static int ct_clone(struct nl_object *_dst, struct nl_object *_src)
 	if (src->ct_orig.src) {
 		addr = nl_addr_clone(src->ct_orig.src);
 		if (!addr)
-			goto errout;
+			return -NLE_NOMEM;
 		dst->ct_orig.src = addr;
 	}
 
 	if (src->ct_orig.dst) {
 		addr = nl_addr_clone(src->ct_orig.dst);
 		if (!addr)
-			goto errout;
+			return -NLE_NOMEM;
 		dst->ct_orig.dst = addr;
 	}
 
 	if (src->ct_repl.src) {
 		addr = nl_addr_clone(src->ct_repl.src);
 		if (!addr)
-			goto errout;
+			return -NLE_NOMEM;
 		dst->ct_repl.src = addr;
 	}
 
 	if (src->ct_repl.dst) {
 		addr = nl_addr_clone(src->ct_repl.dst);
 		if (!addr)
-			goto errout;
+			return -NLE_NOMEM;
 		dst->ct_repl.dst = addr;
 	}
 
 	return 0;
-errout:
-	return nl_get_errno();
 }
 
-static void ct_dump_dir(struct nfnl_ct *ct, int repl,
-			struct nl_dump_params *p)
+static void dump_addr(struct nl_dump_params *p, struct nl_addr *addr, int port)
 {
-	struct nl_addr *addr;
-	char addrbuf[64];
+	char buf[64];
 
-	addr = nfnl_ct_get_src(ct, repl);
 	if (addr)
-		dp_dump(p, "src=%s ",
-			nl_addr2str(addr, addrbuf, sizeof(addrbuf)));
+		nl_dump(p, "%s", nl_addr2str(addr, buf, sizeof(buf)));
 
-	addr = nfnl_ct_get_dst(ct, repl);
-	if (addr)
-		dp_dump(p, "dst=%s ",
-			nl_addr2str(addr, addrbuf, sizeof(addrbuf)));
+	if (port)
+		nl_dump(p, ":%u ", port);
+	else if (addr)
+		nl_dump(p, " ");
+}
 
-	if (nfnl_ct_test_src_port(ct, repl))
-		dp_dump(p, "sport=%u ", ntohs(nfnl_ct_get_src_port(ct, repl)));
-	if (nfnl_ct_test_dst_port(ct, repl))
-		dp_dump(p, "dport=%u ", ntohs(nfnl_ct_get_dst_port(ct, repl)));
+static void dump_icmp(struct nl_dump_params *p, struct nfnl_ct *ct, int reply)
+{
+	if (nfnl_ct_test_icmp_type(ct, reply))
+		nl_dump(p, "icmp type %d ", nfnl_ct_get_icmp_type(ct, reply));
 
-	if (nfnl_ct_test_icmp_type(ct, repl))
-		dp_dump(p, "type=%d ", nfnl_ct_get_icmp_type(ct, repl));
-	if (nfnl_ct_test_icmp_type(ct, repl))
-		dp_dump(p, "code=%d ", nfnl_ct_get_icmp_code(ct, repl));
-	if (nfnl_ct_test_icmp_type(ct, repl))
-		dp_dump(p, "id=%d ", ntohs(nfnl_ct_get_icmp_id(ct, repl)));
+	if (nfnl_ct_test_icmp_type(ct, reply))
+		nl_dump(p, "code %d ", nfnl_ct_get_icmp_code(ct, reply));
 
-	if (nfnl_ct_test_packets(ct, repl))
-		dp_dump(p, "packets=%llu ", nfnl_ct_get_packets(ct, repl));
-	if (nfnl_ct_test_bytes(ct, repl))
-		dp_dump(p, "bytes=%llu ", nfnl_ct_get_bytes(ct, repl));
+	if (nfnl_ct_test_icmp_type(ct, reply))
+		nl_dump(p, "id %d ", nfnl_ct_get_icmp_id(ct, reply));
+}
+
+static void ct_dump_tuples(struct nfnl_ct *ct, struct nl_dump_params *p)
+{
+	struct nl_addr *orig_src, *orig_dst, *reply_src, *reply_dst;
+	int orig_sport = 0, orig_dport = 0, reply_sport = 0, reply_dport = 0;
+	int sync = 0;
+
+	orig_src = nfnl_ct_get_src(ct, 0);
+	orig_dst = nfnl_ct_get_dst(ct, 0);
+	reply_src = nfnl_ct_get_src(ct, 1);
+	reply_dst = nfnl_ct_get_dst(ct, 1);
+
+	if (nfnl_ct_test_src_port(ct, 0))
+		orig_sport = nfnl_ct_get_src_port(ct, 0);
+
+	if (nfnl_ct_test_dst_port(ct, 0))
+		orig_dport = nfnl_ct_get_dst_port(ct, 0);
+
+	if (nfnl_ct_test_src_port(ct, 1))
+		reply_sport = nfnl_ct_get_src_port(ct, 1);
+
+	if (nfnl_ct_test_dst_port(ct, 1))
+		reply_dport = nfnl_ct_get_dst_port(ct, 1);
+
+	if (orig_src && orig_dst && reply_src && reply_dst &&
+	    orig_sport == reply_dport && orig_dport == reply_sport &&
+	    !nl_addr_cmp(orig_src, reply_dst) &&
+	    !nl_addr_cmp(orig_dst, reply_src))
+		sync = 1;
+
+	dump_addr(p, orig_src, orig_sport);
+	nl_dump(p, sync ? "<-> " : "-> ");
+	dump_addr(p, orig_dst, orig_dport);
+	dump_icmp(p, ct, 0);
+
+	if (!sync) {
+		dump_addr(p, reply_src, reply_sport);
+		nl_dump(p, "<- ");
+		dump_addr(p, reply_dst, reply_dport);
+		dump_icmp(p, ct, 1);
+	}
 }
 
 /* Compatible with /proc/net/nf_conntrack */
-static int ct_dump(struct nl_object *a, struct nl_dump_params *p)
+static void ct_dump_line(struct nl_object *a, struct nl_dump_params *p)
 {
 	struct nfnl_ct *ct = (struct nfnl_ct *) a;
 	char buf[64];
-	uint32_t status;
-	uint8_t family;
-	uint8_t proto;
 
-	family = nfnl_ct_get_family(ct);
-	dp_dump(p, "%-8s %u ", nl_af2str(family, buf, sizeof(buf)), family);
+	nl_new_line(p);
 
-	if (nfnl_ct_test_proto(ct)) {
-		proto = nfnl_ct_get_proto(ct);
-		dp_dump(p, "%-8s %u ",
-			nl_ip_proto2str(proto, buf, sizeof(buf)), proto);
-	}
-
-	if (nfnl_ct_test_timeout(ct))
-		dp_dump(p, "%ld ", nfnl_ct_get_timeout(ct));
+	if (nfnl_ct_test_proto(ct))
+		nl_dump(p, "%s ",
+		  nl_ip_proto2str(nfnl_ct_get_proto(ct), buf, sizeof(buf)));
 
 	if (nfnl_ct_test_tcp_state(ct))
-		dp_dump(p, "%s ",
+		nl_dump(p, "%s ",
 			nfnl_ct_tcp_state2str(nfnl_ct_get_tcp_state(ct),
 					      buf, sizeof(buf)));
 
-	ct_dump_dir(ct, 0, p);
+	ct_dump_tuples(ct, p);
 
-	status = nfnl_ct_get_status(ct);
-	if (!(status & IPS_SEEN_REPLY))
-		dp_dump(p, "[UNREPLIED] ");
+	if (nfnl_ct_test_mark(ct) && nfnl_ct_get_mark(ct))
+		nl_dump(p, "mark %u ", nfnl_ct_get_mark(ct));
 
-	ct_dump_dir(ct, 1, p);
+	nl_dump(p, "\n");
+}
 
-	if (status & IPS_ASSURED)
-		dp_dump(p, "[ASSURED] ");
+static void ct_dump_details(struct nl_object *a, struct nl_dump_params *p)
+{
+	struct nfnl_ct *ct = (struct nfnl_ct *) a;
+	char buf[64];
+	int fp = 0;
 
-	if (nfnl_ct_test_mark(ct))
-		dp_dump(p, "mark=%u ", nfnl_ct_get_mark(ct));
+	ct_dump_line(a, p);
+
+	nl_dump(p, "    id 0x%x ", ct->ct_id);
+	nl_dump_line(p, "family %s ",
+		nl_af2str(ct->ct_family, buf, sizeof(buf)));
 
 	if (nfnl_ct_test_use(ct))
-		dp_dump(p, "use=%u ", nfnl_ct_get_use(ct));
+		nl_dump(p, "refcnt %u ", nfnl_ct_get_use(ct));
 
-	dp_dump(p, "\n");
+	if (nfnl_ct_test_timeout(ct)) {
+		uint64_t timeout_ms = nfnl_ct_get_timeout(ct) * 1000UL;
+		nl_dump(p, "timeout %s ",
+			nl_msec2str(timeout_ms, buf, sizeof(buf)));
+	}
 
-	return 1;
+	if (ct->ct_status)
+		nl_dump(p, "<");
+
+#define PRINT_FLAG(str) \
+	{ nl_dump(p, "%s%s", fp++ ? "," : "", (str)); }
+
+	if (ct->ct_status & IPS_EXPECTED)
+		PRINT_FLAG("EXPECTED");
+	if (!(ct->ct_status & IPS_SEEN_REPLY))
+		PRINT_FLAG("NOREPLY");
+	if (ct->ct_status & IPS_ASSURED)
+		PRINT_FLAG("ASSURED");
+	if (!(ct->ct_status & IPS_CONFIRMED))
+		PRINT_FLAG("NOTSENT");
+	if (ct->ct_status & IPS_SRC_NAT)
+		PRINT_FLAG("SNAT");
+	if (ct->ct_status & IPS_DST_NAT)
+		PRINT_FLAG("DNAT");
+	if (ct->ct_status & IPS_SEQ_ADJUST)
+		PRINT_FLAG("SEQADJUST");
+	if (!(ct->ct_status & IPS_SRC_NAT_DONE))
+		PRINT_FLAG("SNAT_INIT");
+	if (!(ct->ct_status & IPS_DST_NAT_DONE))
+		PRINT_FLAG("DNAT_INIT");
+	if (ct->ct_status & IPS_DYING)
+		PRINT_FLAG("DYING");
+	if (ct->ct_status & IPS_FIXED_TIMEOUT)
+		PRINT_FLAG("FIXED_TIMEOUT");
+#undef PRINT_FLAG
+
+	if (ct->ct_status)
+		nl_dump(p, ">");
+	nl_dump(p, "\n");
+}
+
+static void ct_dump_stats(struct nl_object *a, struct nl_dump_params *p)
+{
+	struct nfnl_ct *ct = (struct nfnl_ct *) a;
+	double res;
+	char *unit;
+
+	ct_dump_details(a, p);
+
+	nl_dump_line(p, "        # packets      volume\n");
+
+	res = nl_cancel_down_bytes(nfnl_ct_get_bytes(ct, 1), &unit);
+	nl_dump_line(p, "    rx %10llu %7.2f %s\n",
+		nfnl_ct_get_packets(ct, 1), res, unit);
+
+	res = nl_cancel_down_bytes(nfnl_ct_get_bytes(ct, 0), &unit);
+	nl_dump_line(p, "    tx %10llu %7.2f %s\n",
+		nfnl_ct_get_packets(ct, 0), res, unit);
 }
 
 static int ct_compare(struct nl_object *_a, struct nl_object *_b,
@@ -197,7 +280,7 @@ static int ct_compare(struct nl_object *_a, struct nl_object *_b,
 #define CT_DIFF(ATTR, EXPR) ATTR_DIFF(attrs, CT_ATTR_##ATTR, a, b, EXPR)
 #define CT_DIFF_VAL(ATTR, FIELD) CT_DIFF(ATTR, a->FIELD != b->FIELD)
 #define CT_DIFF_ADDR(ATTR, FIELD) \
-	((flags & LOOSE_FLAG_COMPARISON) \
+	((flags & LOOSE_COMPARISON) \
 		? CT_DIFF(ATTR, nl_addr_cmp_prefix(a->FIELD, b->FIELD)) \
 		: CT_DIFF(ATTR, nl_addr_cmp(a->FIELD, b->FIELD)))
 
@@ -227,7 +310,7 @@ static int ct_compare(struct nl_object *_a, struct nl_object *_b,
 	diff |= CT_DIFF_VAL(REPL_PACKETS,	ct_repl.packets);
 	diff |= CT_DIFF_VAL(REPL_BYTES,		ct_repl.bytes);
 
-	if (flags & LOOSE_FLAG_COMPARISON)
+	if (flags & LOOSE_COMPARISON)
 		diff |= CT_DIFF(STATUS, (a->ct_status ^ b->ct_status) &
 					b->ct_status_mask);
 	else
@@ -389,6 +472,31 @@ uint32_t nfnl_ct_get_status(const struct nfnl_ct *ct)
 	return ct->ct_status;
 }
 
+static struct trans_tbl status_flags[] = {
+	__ADD(IPS_EXPECTED, expected)
+	__ADD(IPS_SEEN_REPLY, seen_reply)
+	__ADD(IPS_ASSURED, assured)
+	__ADD(IPS_CONFIRMED, confirmed)
+	__ADD(IPS_SRC_NAT, snat)
+	__ADD(IPS_DST_NAT, dnat)
+	__ADD(IPS_SEQ_ADJUST, seqadjust)
+	__ADD(IPS_SRC_NAT_DONE, snat_done)
+	__ADD(IPS_DST_NAT_DONE, dnat_done)
+	__ADD(IPS_DYING, dying)
+	__ADD(IPS_FIXED_TIMEOUT, fixed_timeout)
+};
+
+char * nfnl_ct_status2str(int flags, char *buf, size_t len)
+{
+	return __flags2str(flags, buf, len, status_flags,
+			   ARRAY_SIZE(status_flags));
+}
+
+int nfnl_ct_str2status(const char *name)
+{
+	return __str2flags(name, status_flags, ARRAY_SIZE(status_flags));
+}
+
 void nfnl_ct_set_timeout(struct nfnl_ct *ct, uint32_t timeout)
 {
 	ct->ct_timeout = timeout;
@@ -458,7 +566,7 @@ static int ct_set_addr(struct nfnl_ct *ct, struct nl_addr *addr,
 {
 	if (ct->ce_mask & CT_ATTR_FAMILY) {
 		if (addr->a_family != ct->ct_family)
-			return nl_error(EINVAL, "Address family mismatch");
+			return -NLE_AF_MISMATCH;
 	} else
 		nfnl_ct_set_family(ct, addr->a_family);
 
@@ -665,9 +773,11 @@ struct nl_object_ops ct_obj_ops = {
 	.oo_size		= sizeof(struct nfnl_ct),
 	.oo_free_data		= ct_free_data,
 	.oo_clone		= ct_clone,
-	.oo_dump[NL_DUMP_BRIEF]	= ct_dump,
-	.oo_dump[NL_DUMP_FULL]	= ct_dump,
-	.oo_dump[NL_DUMP_STATS]	= ct_dump,
+	.oo_dump = {
+	    [NL_DUMP_LINE]	= ct_dump_line,
+	    [NL_DUMP_DETAILS]	= ct_dump_details,
+	    [NL_DUMP_STATS]	= ct_dump_stats,
+	},
 	.oo_compare		= ct_compare,
 	.oo_attrs2str		= ct_attrs2str,
 };

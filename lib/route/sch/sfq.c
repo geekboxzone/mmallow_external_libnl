@@ -6,7 +6,7 @@
  *	License as published by the Free Software Foundation version 2.1
  *	of the License.
  *
- * Copyright (c) 2003-2006 Thomas Graf <tgraf@suug.ch>
+ * Copyright (c) 2003-2008 Thomas Graf <tgraf@suug.ch>
  */
 
 /**
@@ -61,11 +61,11 @@ static int sfq_msg_parser(struct rtnl_qdisc *qdisc)
 		return 0;
 
 	if (qdisc->q_opts->d_size < sizeof(*opts))
-		return nl_error(EINVAL, "SFQ specific options size mismatch");
+		return -NLE_INVAL;
 
 	sfq = sfq_alloc(qdisc);
 	if (!sfq)
-		return nl_errno(ENOMEM);
+		return -NLE_NOMEM;
 
 	opts = (struct tc_sfq_qopt *) qdisc->q_opts->d_data;
 
@@ -87,29 +87,22 @@ static void sfq_free_data(struct rtnl_qdisc *qdisc)
 	free(qdisc->q_subdata);
 }
 
-static int sfq_dump_brief(struct rtnl_qdisc *qdisc, struct nl_dump_params *p,
-			  int line)
+static void sfq_dump_line(struct rtnl_qdisc *qdisc, struct nl_dump_params *p)
 {
 	struct rtnl_sfq *sfq = sfq_qdisc(qdisc);
 
 	if (sfq)
-		dp_dump(p, " quantum %u perturb %us",
-			sfq->qs_quantum,
+		nl_dump(p, " quantum %u perturb %us", sfq->qs_quantum,
 			nl_ticks2us(sfq->qs_perturb * nl_get_hz()));
-
-	return line;
 }
 
-static int sfq_dump_full(struct rtnl_qdisc *qdisc, struct nl_dump_params *p,
-			 int line)
+static void sfq_dump_details(struct rtnl_qdisc *qdisc, struct nl_dump_params *p)
 {
 	struct rtnl_sfq *sfq = sfq_qdisc(qdisc);
 
 	if (sfq)
-		dp_dump(p, "limit %u divisor %u",
+		nl_dump(p, "limit %u divisor %u",
 			sfq->qs_limit, sfq->qs_divisor);
-
-	return line;
 }
 
 static struct nl_msg *sfq_get_opts(struct rtnl_qdisc *qdisc)
@@ -157,7 +150,7 @@ int rtnl_sfq_set_quantum(struct rtnl_qdisc *qdisc, int quantum)
 	
 	sfq = sfq_alloc(qdisc);
 	if (!sfq)
-		return nl_errno(ENOMEM);
+		return -NLE_NOMEM;
 
 	sfq->qs_quantum = quantum;
 	sfq->qs_mask |= SCH_SFQ_ATTR_QUANTUM;
@@ -178,7 +171,7 @@ int rtnl_sfq_get_quantum(struct rtnl_qdisc *qdisc)
 	if (sfq && sfq->qs_mask & SCH_SFQ_ATTR_QUANTUM)
 		return sfq->qs_quantum;
 	else
-		return nl_errno(ENOENT);
+		return -NLE_NOATTR;
 }
 
 /**
@@ -193,7 +186,7 @@ int rtnl_sfq_set_limit(struct rtnl_qdisc *qdisc, int limit)
 
 	sfq = sfq_alloc(qdisc);
 	if (!sfq)
-		return nl_errno(ENOMEM);
+		return -NLE_NOMEM;
 
 	sfq->qs_limit = limit;
 	sfq->qs_mask |= SCH_SFQ_ATTR_LIMIT;
@@ -214,7 +207,7 @@ int rtnl_sfq_get_limit(struct rtnl_qdisc *qdisc)
 	if (sfq && sfq->qs_mask & SCH_SFQ_ATTR_LIMIT)
 		return sfq->qs_limit;
 	else
-		return nl_errno(ENOENT);
+		return -NLE_NOATTR;
 }
 
 /**
@@ -230,7 +223,7 @@ int rtnl_sfq_set_perturb(struct rtnl_qdisc *qdisc, int perturb)
 
 	sfq = sfq_alloc(qdisc);
 	if (!sfq)
-		return nl_errno(ENOMEM);
+		return -NLE_NOMEM;
 
 	sfq->qs_perturb = perturb;
 	sfq->qs_mask |= SCH_SFQ_ATTR_PERTURB;
@@ -251,7 +244,7 @@ int rtnl_sfq_get_perturb(struct rtnl_qdisc *qdisc)
 	if (sfq && sfq->qs_mask & SCH_SFQ_ATTR_PERTURB)
 		return sfq->qs_perturb;
 	else
-		return nl_errno(ENOENT);
+		return -NLE_NOATTR;
 }
 
 /**
@@ -267,7 +260,7 @@ int rtnl_sfq_get_divisor(struct rtnl_qdisc *qdisc)
 	if (sfq && sfq->qs_mask & SCH_SFQ_ATTR_DIVISOR)
 		return sfq->qs_divisor;
 	else
-		return nl_errno(ENOENT);
+		return -NLE_NOATTR;
 }
 
 /** @} */
@@ -276,8 +269,10 @@ static struct rtnl_qdisc_ops sfq_ops = {
 	.qo_kind		= "sfq",
 	.qo_msg_parser		= sfq_msg_parser,
 	.qo_free_data		= sfq_free_data,
-	.qo_dump[NL_DUMP_BRIEF]	= sfq_dump_brief,
-	.qo_dump[NL_DUMP_FULL]	= sfq_dump_full,
+	.qo_dump = {
+	    [NL_DUMP_LINE]	= sfq_dump_line,
+	    [NL_DUMP_DETAILS]	= sfq_dump_details,
+	},
 	.qo_get_opts		= sfq_get_opts,
 };
 

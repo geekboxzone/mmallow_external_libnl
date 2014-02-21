@@ -6,9 +6,10 @@
  *	License as published by the Free Software Foundation version 2.1
  *	of the License.
  *
- * Copyright (c) 2003-2006 Thomas Graf <tgraf@suug.ch>
+ * Copyright (c) 2003-2008 Thomas Graf <tgraf@suug.ch>
  * Copyright (c) 2007 Philip Craig <philipc@snapgear.com>
  * Copyright (c) 2007 Secure Computing Corporation
+ * Copyright (c= 2008 Patrick McHardy <kaber@trash.net>
  */
 
 /**
@@ -112,36 +113,36 @@ static int ct_parse_ip(struct nfnl_ct *ct, int repl, struct nlattr *attr)
 		goto errout;
 
 	if (tb[CTA_IP_V4_SRC]) {
-		addr = nla_get_addr(tb[CTA_IP_V4_SRC], AF_INET);
+		addr = nl_addr_alloc_attr(tb[CTA_IP_V4_SRC], AF_INET);
 		if (addr == NULL)
-			goto errout_errno;
+			goto errout_enomem;
 		err = nfnl_ct_set_src(ct, repl, addr);
 		nl_addr_put(addr);
 		if (err < 0)
 			goto errout;
 	}
 	if (tb[CTA_IP_V4_DST]) {
-		addr = nla_get_addr(tb[CTA_IP_V4_DST], AF_INET);
+		addr = nl_addr_alloc_attr(tb[CTA_IP_V4_DST], AF_INET);
 		if (addr == NULL)
-			goto errout_errno;
+			goto errout_enomem;
 		err = nfnl_ct_set_dst(ct, repl, addr);
 		nl_addr_put(addr);
 		if (err < 0)
 			goto errout;
 	}
 	if (tb[CTA_IP_V6_SRC]) {
-		addr = nla_get_addr(tb[CTA_IP_V6_SRC], AF_INET6);
+		addr = nl_addr_alloc_attr(tb[CTA_IP_V6_SRC], AF_INET6);
 		if (addr == NULL)
-			goto errout_errno;
+			goto errout_enomem;
 		err = nfnl_ct_set_src(ct, repl, addr);
 		nl_addr_put(addr);
 		if (err < 0)
 			goto errout;
 	}
 	if (tb[CTA_IP_V6_DST]) {
-		addr = nla_get_addr(tb[CTA_IP_V6_DST], AF_INET6);
+		addr = nl_addr_alloc_attr(tb[CTA_IP_V6_DST], AF_INET6);
 		if (addr == NULL)
-			goto errout_errno;
+			goto errout_enomem;
 		err = nfnl_ct_set_dst(ct, repl, addr);
 		nl_addr_put(addr);
 		if (err < 0)
@@ -150,8 +151,8 @@ static int ct_parse_ip(struct nfnl_ct *ct, int repl, struct nlattr *attr)
 
 	return 0;
 
-errout_errno:
-	return nl_get_errno();
+errout_enomem:
+	err = -NLE_NOMEM;
 errout:
 	return err;
 }
@@ -169,13 +170,13 @@ static int ct_parse_proto(struct nfnl_ct *ct, int repl, struct nlattr *attr)
 		nfnl_ct_set_proto(ct, nla_get_u8(tb[CTA_PROTO_NUM]));
 	if (tb[CTA_PROTO_SRC_PORT])
 		nfnl_ct_set_src_port(ct, repl,
-				nla_get_u16(tb[CTA_PROTO_SRC_PORT]));
+			ntohs(nla_get_u16(tb[CTA_PROTO_SRC_PORT])));
 	if (tb[CTA_PROTO_DST_PORT])
 		nfnl_ct_set_dst_port(ct, repl,
-				nla_get_u16(tb[CTA_PROTO_DST_PORT]));
+			ntohs(nla_get_u16(tb[CTA_PROTO_DST_PORT])));
 	if (tb[CTA_PROTO_ICMP_ID])
 		nfnl_ct_set_icmp_id(ct, repl,
-				nla_get_u16(tb[CTA_PROTO_ICMP_ID]));
+			ntohs(nla_get_u16(tb[CTA_PROTO_ICMP_ID])));
 	if (tb[CTA_PROTO_ICMP_TYPE])
 		nfnl_ct_set_icmp_type(ct, repl,
 				nla_get_u8(tb[CTA_PROTO_ICMP_TYPE]));
@@ -286,7 +287,7 @@ int nfnlmsg_ct_group(struct nlmsghdr *nlh)
 	}
 }
 
-struct nfnl_ct *nfnlmsg_ct_parse(struct nlmsghdr *nlh)
+int nfnlmsg_ct_parse(struct nlmsghdr *nlh, struct nfnl_ct **result)
 {
 	struct nfnl_ct *ct;
 	struct nlattr *tb[CTA_MAX+1];
@@ -294,7 +295,7 @@ struct nfnl_ct *nfnlmsg_ct_parse(struct nlmsghdr *nlh)
 
 	ct = nfnl_ct_alloc();
 	if (!ct)
-		return NULL;
+		return -NLE_NOMEM;
 
 	ct->ce_msgtype = nlh->nlmsg_type;
 
@@ -345,11 +346,12 @@ struct nfnl_ct *nfnlmsg_ct_parse(struct nlmsghdr *nlh)
 			goto errout;
 	}
 
-	return ct;
+	*result = ct;
+	return 0;
 
 errout:
 	nfnl_ct_put(ct);
-	return NULL;
+	return err;
 }
 
 static int ct_msg_parser(struct nl_cache_ops *ops, struct sockaddr_nl *who,
@@ -358,34 +360,179 @@ static int ct_msg_parser(struct nl_cache_ops *ops, struct sockaddr_nl *who,
 	struct nfnl_ct *ct;
 	int err;
 
-	ct = nfnlmsg_ct_parse(nlh);
-	if (ct == NULL)
-		goto errout_errno;
-
-	err = pp->pp_cb((struct nl_object *) ct, pp);
-	if (err < 0)
+	if ((err = nfnlmsg_ct_parse(nlh, &ct)) < 0)
 		goto errout;
 
-	err = P_ACCEPT;
-
+	err = pp->pp_cb((struct nl_object *) ct, pp);
 errout:
 	nfnl_ct_put(ct);
 	return err;
-
-errout_errno:
-	err = nl_get_errno();
-	goto errout;
 }
 
-int nfnl_ct_dump_request(struct nl_handle *h)
+int nfnl_ct_dump_request(struct nl_sock *sk)
 {
-	return nfnl_send_simple(h, NFNL_SUBSYS_CTNETLINK, IPCTNL_MSG_CT_GET,
+	return nfnl_send_simple(sk, NFNL_SUBSYS_CTNETLINK, IPCTNL_MSG_CT_GET,
 				NLM_F_DUMP, AF_UNSPEC, 0);
 }
 
-static int ct_request_update(struct nl_cache *c, struct nl_handle *h)
+static int ct_request_update(struct nl_cache *cache, struct nl_sock *sk)
 {
-	return nfnl_ct_dump_request(h);
+	return nfnl_ct_dump_request(sk);
+}
+
+static int nfnl_ct_build_tuple(struct nl_msg *msg, const struct nfnl_ct *ct,
+			       int repl)
+{
+	struct nlattr *tuple, *ip, *proto;
+	struct nl_addr *addr;
+	int family;
+
+	family = nfnl_ct_get_family(ct);
+
+	tuple = nla_nest_start(msg, repl ? CTA_TUPLE_REPLY : CTA_TUPLE_ORIG);
+	if (!tuple)
+		goto nla_put_failure;
+
+	ip = nla_nest_start(msg, CTA_TUPLE_IP);
+	if (!ip)
+		goto nla_put_failure;
+
+	addr = nfnl_ct_get_src(ct, repl);
+	if (addr)
+		NLA_PUT_ADDR(msg,
+			     family == AF_INET ? CTA_IP_V4_SRC : CTA_IP_V6_SRC,
+			     addr);
+
+	addr = nfnl_ct_get_dst(ct, repl);
+	if (addr)
+		NLA_PUT_ADDR(msg,
+			     family == AF_INET ? CTA_IP_V4_DST : CTA_IP_V6_DST,
+			     addr);
+
+	nla_nest_end(msg, ip);
+
+	proto = nla_nest_start(msg, CTA_TUPLE_PROTO);
+	if (!proto)
+		goto nla_put_failure;
+
+	if (nfnl_ct_test_proto(ct))
+		NLA_PUT_U8(msg, CTA_PROTO_NUM, nfnl_ct_get_proto(ct));
+
+	if (nfnl_ct_test_src_port(ct, repl))
+		NLA_PUT_U16(msg, CTA_PROTO_SRC_PORT,
+			htons(nfnl_ct_get_src_port(ct, repl)));
+
+	if (nfnl_ct_test_dst_port(ct, repl))
+		NLA_PUT_U16(msg, CTA_PROTO_DST_PORT,
+			htons(nfnl_ct_get_dst_port(ct, repl)));
+
+	if (nfnl_ct_test_icmp_id(ct, repl))
+		NLA_PUT_U16(msg, CTA_PROTO_ICMP_ID,
+			htons(nfnl_ct_get_icmp_id(ct, repl)));
+
+	if (nfnl_ct_test_icmp_type(ct, repl))
+		NLA_PUT_U8(msg, CTA_PROTO_ICMP_TYPE,
+			    nfnl_ct_get_icmp_type(ct, repl));
+
+	if (nfnl_ct_test_icmp_code(ct, repl))
+		NLA_PUT_U8(msg, CTA_PROTO_ICMP_CODE,
+			    nfnl_ct_get_icmp_code(ct, repl));
+
+	nla_nest_end(msg, proto);
+
+	nla_nest_end(msg, tuple);
+	return 0;
+
+nla_put_failure:
+	return -NLE_MSGSIZE;
+}
+
+static int nfnl_ct_build_message(const struct nfnl_ct *ct, int cmd, int flags,
+				 struct nl_msg **result)
+{
+	struct nl_msg *msg;
+	int err;
+
+	msg = nfnlmsg_alloc_simple(NFNL_SUBSYS_CTNETLINK, cmd, flags,
+				   nfnl_ct_get_family(ct), 0);
+	if (msg == NULL)
+		return -NLE_NOMEM;
+
+	if ((err = nfnl_ct_build_tuple(msg, ct, 0)) < 0)
+		goto err_out;
+
+	*result = msg;
+	return 0;
+
+err_out:
+	nlmsg_free(msg);
+	return err;
+}
+
+int nfnl_ct_build_add_request(const struct nfnl_ct *ct, int flags,
+			      struct nl_msg **result)
+{
+	return nfnl_ct_build_message(ct, IPCTNL_MSG_CT_NEW, flags, result);
+}
+
+int nfnl_ct_add(struct nl_sock *sk, const struct nfnl_ct *ct, int flags)
+{
+	struct nl_msg *msg;
+	int err;
+
+	if ((err = nfnl_ct_build_add_request(ct, flags, &msg)) < 0)
+		return err;
+
+	err = nl_send_auto_complete(sk, msg);
+	nlmsg_free(msg);
+	if (err < 0)
+		return err;
+
+	return wait_for_ack(sk);
+}
+
+int nfnl_ct_build_delete_request(const struct nfnl_ct *ct, int flags,
+				 struct nl_msg **result)
+{
+	return nfnl_ct_build_message(ct, IPCTNL_MSG_CT_DELETE, flags, result);
+}
+
+int nfnl_ct_del(struct nl_sock *sk, const struct nfnl_ct *ct, int flags)
+{
+	struct nl_msg *msg;
+	int err;
+
+	if ((err = nfnl_ct_build_delete_request(ct, flags, &msg)) < 0)
+		return err;
+
+	err = nl_send_auto_complete(sk, msg);
+	nlmsg_free(msg);
+	if (err < 0)
+		return err;
+
+	return wait_for_ack(sk);
+}
+
+int nfnl_ct_build_query_request(const struct nfnl_ct *ct, int flags,
+				struct nl_msg **result)
+{
+	return nfnl_ct_build_message(ct, IPCTNL_MSG_CT_GET, flags, result);
+}
+
+int nfnl_ct_query(struct nl_sock *sk, const struct nfnl_ct *ct, int flags)
+{
+	struct nl_msg *msg;
+	int err;
+
+	if ((err = nfnl_ct_build_query_request(ct, flags, &msg)) < 0)
+		return err;
+
+	err = nl_send_auto_complete(sk, msg);
+	nlmsg_free(msg);
+	if (err < 0)
+		return err;
+
+	return wait_for_ack(sk);
 }
 
 /**
@@ -395,29 +542,17 @@ static int ct_request_update(struct nl_cache *c, struct nl_handle *h)
 
 /**
  * Build a conntrack cache holding all conntrack currently in the kernel
- * @arg handle		netlink handle
+ * @arg sk		Netlink socket.
+ * @arg result		Pointer to store resulting cache.
  *
  * Allocates a new cache, initializes it properly and updates it to
  * contain all conntracks currently in the kernel.
  *
- * @note The caller is responsible for destroying and freeing the
- *       cache after using it.
- * @return The cache or NULL if an error has occured.
+ * @return 0 on success or a negative error code.
  */
-struct nl_cache *nfnl_ct_alloc_cache(struct nl_handle *handle)
+int nfnl_ct_alloc_cache(struct nl_sock *sk, struct nl_cache **result)
 {
-	struct nl_cache *cache;
-
-	cache = nl_cache_alloc(&nfnl_ct_ops);
-	if (!cache)
-		return NULL;
-
-	if (handle && nl_cache_refill(handle, cache) < 0) {
-		free(cache);
-		return NULL;
-	}
-
-	return cache;
+	return nl_cache_alloc_and_fill(&nfnl_ct_ops, sk, result);
 }
 
 /** @} */

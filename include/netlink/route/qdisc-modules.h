@@ -32,13 +32,15 @@ struct rtnl_qdisc_ops
 	/**
 	 * Dump callbacks
 	 */
-	int  (*qo_dump[NL_DUMP_MAX+1])(struct rtnl_qdisc *,
-				       struct nl_dump_params *, int);
+	void  (*qo_dump[NL_DUMP_MAX+1])(struct rtnl_qdisc *,
+					struct nl_dump_params *);
 
 	/**
 	 * Must return the contents supposed to be in TCA_OPTIONS
 	 */
 	struct nl_msg *(*qo_get_opts)(struct rtnl_qdisc *);
+
+	int (*qo_build_msg)(struct rtnl_qdisc *, struct nl_msg *);
 
 	/**
 	 * TCA_OPTIONS message parser

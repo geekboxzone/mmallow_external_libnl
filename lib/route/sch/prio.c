@@ -6,7 +6,7 @@
  *	License as published by the Free Software Foundation version 2.1
  *	of the License.
  *
- * Copyright (c) 2003-2006 Thomas Graf <tgraf@suug.ch>
+ * Copyright (c) 2003-2008 Thomas Graf <tgraf@suug.ch>
  */
 
 /**
@@ -58,11 +58,11 @@ static int prio_msg_parser(struct rtnl_qdisc *qdisc)
 	struct tc_prio_qopt *opt;
 
 	if (qdisc->q_opts->d_size < sizeof(*opt))
-		return nl_error(EINVAL, "prio specific option size mismatch");
+		return -NLE_INVAL;
 
 	prio = prio_alloc(qdisc);
 	if (!prio)
-		return nl_errno(ENOMEM);
+		return -NLE_NOMEM;
 
 	opt = (struct tc_prio_qopt *) qdisc->q_opts->d_data;
 	prio->qp_bands = opt->bands;
@@ -77,55 +77,48 @@ static void prio_free_data(struct rtnl_qdisc *qdisc)
 	free(qdisc->q_subdata);
 }
 
-static int prio_dump_brief(struct rtnl_qdisc *qdisc,
-			   struct nl_dump_params *p, int line)
+static void prio_dump_line(struct rtnl_qdisc *qdisc, struct nl_dump_params *p)
 {
 	struct rtnl_prio *prio = prio_qdisc(qdisc);
 
 	if (prio)
-		dp_dump(p, " bands %u", prio->qp_bands);
-
-	return line;
+		nl_dump(p, " bands %u", prio->qp_bands);
 }
 
-static int prio_dump_full(struct rtnl_qdisc *qdisc,
-			  struct nl_dump_params *p, int line)
+static void prio_dump_details(struct rtnl_qdisc *qdisc,struct nl_dump_params *p)
 {
 	struct rtnl_prio *prio = prio_qdisc(qdisc);
 	int i, hp;
 
 	if (!prio)
-		goto ignore;
+		return;
 
-	dp_dump(p, "priomap [");
+	nl_dump(p, "priomap [");
 	
 	for (i = 0; i <= TC_PRIO_MAX; i++)
-		dp_dump(p, "%u%s", prio->qp_priomap[i],
+		nl_dump(p, "%u%s", prio->qp_priomap[i],
 			i < TC_PRIO_MAX ? " " : "");
 
-	dp_dump(p, "]\n");
-	dp_new_line(p, line++);
+	nl_dump(p, "]\n");
+	nl_new_line(p);
 
 	hp = (((TC_PRIO_MAX/2) + 1) & ~1);
 
 	for (i = 0; i < hp; i++) {
 		char a[32];
-		dp_dump(p, "    %18s => %u",
+		nl_dump(p, "    %18s => %u",
 			rtnl_prio2str(i, a, sizeof(a)),
 			prio->qp_priomap[i]);
 		if (hp+i <= TC_PRIO_MAX) {
-			dp_dump(p, " %18s => %u",
+			nl_dump(p, " %18s => %u",
 				rtnl_prio2str(hp+i, a, sizeof(a)),
 				prio->qp_priomap[hp+i]);
 			if (i < (hp - 1)) {
-				dp_dump(p, "\n");
-				dp_new_line(p, line++);
+				nl_dump(p, "\n");
+				nl_new_line(p);
 			}
 		}
 	}
-
-ignore:
-	return line;
 }
 
 static struct nl_msg *prio_get_opts(struct rtnl_qdisc *qdisc)
@@ -173,7 +166,7 @@ int rtnl_qdisc_prio_set_bands(struct rtnl_qdisc *qdisc, int bands)
 	
 	prio = prio_alloc(qdisc);
 	if (!prio)
-		return nl_errno(ENOMEM);
+		return -NLE_NOMEM;
 
 	prio->qp_bands = bands;
 	prio->qp_mask |= SCH_PRIO_ATTR_BANDS;
@@ -194,7 +187,7 @@ int rtnl_qdisc_prio_get_bands(struct rtnl_qdisc *qdisc)
 	if (prio && prio->qp_mask & SCH_PRIO_ATTR_BANDS)
 		return prio->qp_bands;
 	else
-		return nl_errno(ENOMEM);
+		return -NLE_NOMEM;
 }
 
 /**
@@ -212,18 +205,17 @@ int rtnl_qdisc_prio_set_priomap(struct rtnl_qdisc *qdisc, uint8_t priomap[],
 
 	prio = prio_alloc(qdisc);
 	if (!prio)
-		return nl_errno(ENOMEM);
+		return -NLE_NOMEM;
 
 	if (!(prio->qp_mask & SCH_PRIO_ATTR_BANDS))
-		return nl_error(EINVAL, "Set number of bands first");
+		return -NLE_MISSING_ATTR;
 
 	if ((len / sizeof(uint8_t)) > (TC_PRIO_MAX+1))
-		return nl_error(ERANGE, "priomap length out of bounds");
+		return -NLE_RANGE;
 
 	for (i = 0; i <= TC_PRIO_MAX; i++) {
 		if (priomap[i] > prio->qp_bands)
-			return nl_error(ERANGE, "priomap element %d " \
-			    "out of bounds, increase bands number");
+			return -NLE_RANGE;
 	}
 
 	memcpy(prio->qp_priomap, priomap, len);
@@ -245,10 +237,8 @@ uint8_t *rtnl_qdisc_prio_get_priomap(struct rtnl_qdisc *qdisc)
 	prio = prio_qdisc(qdisc);
 	if (prio && prio->qp_mask & SCH_PRIO_ATTR_PRIOMAP)
 		return prio->qp_priomap;
-	else {
-		nl_errno(ENOENT);
+	else
 		return NULL;
-	}
 }
 
 /** @} */
@@ -303,8 +293,10 @@ static struct rtnl_qdisc_ops prio_ops = {
 	.qo_kind		= "prio",
 	.qo_msg_parser		= prio_msg_parser,
 	.qo_free_data		= prio_free_data,
-	.qo_dump[NL_DUMP_BRIEF]	= prio_dump_brief,
-	.qo_dump[NL_DUMP_FULL]	= prio_dump_full,
+	.qo_dump = {
+	    [NL_DUMP_LINE]	= prio_dump_line,
+	    [NL_DUMP_DETAILS]	= prio_dump_details,
+	},
 	.qo_get_opts		= prio_get_opts,
 };
 
@@ -312,8 +304,10 @@ static struct rtnl_qdisc_ops pfifo_fast_ops = {
 	.qo_kind		= "pfifo_fast",
 	.qo_msg_parser		= prio_msg_parser,
 	.qo_free_data		= prio_free_data,
-	.qo_dump[NL_DUMP_BRIEF]	= prio_dump_brief,
-	.qo_dump[NL_DUMP_FULL]	= prio_dump_full,
+	.qo_dump = {
+	    [NL_DUMP_LINE]	= prio_dump_line,
+	    [NL_DUMP_DETAILS]	= prio_dump_details,
+	},
 	.qo_get_opts		= prio_get_opts,
 };
 

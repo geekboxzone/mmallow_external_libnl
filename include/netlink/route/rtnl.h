@@ -6,7 +6,7 @@
  *	License as published by the Free Software Foundation version 2.1
  *	of the License.
  *
- * Copyright (c) 2003-2006 Thomas Graf <tgraf@suug.ch>
+ * Copyright (c) 2003-2008 Thomas Graf <tgraf@suug.ch>
  */
 
 #ifndef NETLINK_RTNL_H_
@@ -22,8 +22,6 @@ extern "C" {
  * @name Realms
  * @{
  */
-
-typedef uint32_t	realm_t;
 
 /**
  * Mask specying the size of each realm part
@@ -51,7 +49,7 @@ typedef uint32_t	realm_t;
 
 
 /* General */
-extern int		nl_rtgen_request(struct nl_handle *, int, int, int);
+extern int		nl_rtgen_request(struct nl_sock *, int, int, int);
 
 /* Routing Type Translations */
 extern char *		nl_rtntype2str(int, char *, size_t);

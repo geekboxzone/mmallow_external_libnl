@@ -6,102 +6,17 @@
  *	License as published by the Free Software Foundation version 2.1
  *	of the License.
  *
- * Copyright (c) 2003-2006 Thomas Graf <tgraf@suug.ch>
+ * Copyright (c) 2003-2008 Thomas Graf <tgraf@suug.ch>
  */
 
 /**
- * @defgroup nl Core Netlink API
- * @brief
+ * @defgroup core Core
  *
- * @par Receiving Semantics
- * @code
- *          nl_recvmsgs_default(socket)
- *                 |
- *                 | cb = nl_socket_get_cb(socket)
- *                 v
- *          nl_recvmsgs(socket, cb)
- *                 |           [Application provides nl_recvmsgs() replacement]
- *                 |- - - - - - - - - - - - - - - v
- *                 |                     cb->cb_recvmsgs_ow()
- *                 |
- *                 |               [Application provides nl_recv() replacement]
- * +-------------->|- - - - - - - - - - - - - - - v
- * |           nl_recv()                   cb->cb_recv_ow()
- * |  +----------->|<- - - - - - - - - - - - - - -+
- * |  |            v
- * |  |      Parse Message
- * |  |            |- - - - - - - - - - - - - - - v
- * |  |            |                         NL_CB_MSG_IN()
- * |  |            |<- - - - - - - - - - - - - - -+
- * |  |            |
- * |  |            |- - - - - - - - - - - - - - - v
- * |  |      Sequence Check                NL_CB_SEQ_CHECK()
- * |  |            |<- - - - - - - - - - - - - - -+
- * |  |            |
- * |  |            |- - - - - - - - - - - - - - - v  [ NLM_F_ACK is set ]
- * |  |            |                      NL_CB_SEND_ACK()
- * |  |            |<- - - - - - - - - - - - - - -+
- * |  |            |
- * |  |      +-----+------+--------------+----------------+--------------+
- * |  |      v            v              v                v              v
- * |  | Valid Message    ACK        NOOP Message  End of Multipart  Error Message
- * |  |      |            |              |                |              |
- * |  |      v            v              v                v              v
- * |  |NL_CB_VALID()  NL_CB_ACK()  NL_CB_SKIPPED()  NL_CB_FINISH()  cb->cb_err()
- * |  |      |            |              |                |              |
- * |  |      +------------+--------------+----------------+              v
- * |  |                                  |                           (FAILURE)
- * |  |                                  |  [Callback returned NL_SKIP]
- * |  |  [More messages to be parsed]    |<-----------
- * |  +----------------------------------|
- * |                                     |
- * |         [Multipart message]         |
- * +-------------------------------------|  [Callback returned NL_STOP]
- *                                       |<-----------
- *                                       v
- *                                   (SUCCESS)
- *
- *                          At any time:
- *                                Message Format Error
- *                                         |- - - - - - - - - - - - v
- *                                         v                  NL_CB_INVALID()
- *                                     (FAILURE)
- *
- *                                Message Overrun (Kernel Lost Data)
- *                                         |- - - - - - - - - - - - v
- *                                         v                  NL_CB_OVERRUN()
- *                                     (FAILURE)
- *
- *                                Callback returned negative error code
- *                                     (FAILURE)
- * @endcode
- *
- * @par Sending Semantics
- * @code
- *     nl_send_auto_complete()
- *             |
- *             | Automatically fill in PID and/or sequence number
- *             |
- *             |                   [Application provides nl_send() replacement]
- *             |- - - - - - - - - - - - - - - - - - - - v
- *             v                                 cb->cb_send_ow()
- *         nl_send()
- *             | Add destination address and credentials
- *             v
- *        nl_sendmsg()
- *             | Set source address
- *             |
- *             |- - - - - - - - - - - - - - - - - - - - v
- *             |                                 NL_CB_MSG_OUT()
- *             |<- - - - - - - - - - - - - - - - - - - -+
- *             v
- *         sendmsg()
- * @endcode
- *
+ * @details
  * @par 1) Connecting the socket
  * @code
  * // Bind and connect the socket to a protocol, NETLINK_ROUTE in this example.
- * nl_connect(handle, NETLINK_ROUTE);
+ * nl_connect(sk, NETLINK_ROUTE);
  * @endcode
  *
  * @par 2) Sending data
@@ -110,29 +25,29 @@
  * // a piece of data to the other netlink peer. This method is not
  * // recommended.
  * const char buf[] = { 0x01, 0x02, 0x03, 0x04 };
- * nl_sendto(handle, buf, sizeof(buf));
+ * nl_sendto(sk, buf, sizeof(buf));
  *
  * // A more comfortable interface is nl_send() taking a pointer to
  * // a netlink message.
  * struct nl_msg *msg = my_msg_builder();
- * nl_send(handle, nlmsg_hdr(msg));
+ * nl_send(sk, nlmsg_hdr(msg));
  *
  * // nl_sendmsg() provides additional control over the sendmsg() message
  * // header in order to allow more specific addressing of multiple peers etc.
  * struct msghdr hdr = { ... };
- * nl_sendmsg(handle, nlmsg_hdr(msg), &hdr);
+ * nl_sendmsg(sk, nlmsg_hdr(msg), &hdr);
  *
  * // You're probably too lazy to fill out the netlink pid, sequence number
  * // and message flags all the time. nl_send_auto_complete() automatically
  * // extends your message header as needed with an appropriate sequence
- * // number, the netlink pid stored in the netlink handle and the message
- * // flags NLM_F_REQUEST and NLM_F_ACK
- * nl_send_auto_complete(handle, nlmsg_hdr(msg));
+ * // number, the netlink pid stored in the netlink socket and the message
+ * // flags NLM_F_REQUEST and NLM_F_ACK (if not disabled in the socket)
+ * nl_send_auto_complete(sk, nlmsg_hdr(msg));
  *
  * // Simple protocols don't require the complex message construction interface
  * // and may favour nl_send_simple() to easly send a bunch of payload
  * // encapsulated in a netlink message header.
- * nl_send_simple(handle, MY_MSG_TYPE, 0, buf, sizeof(buf));
+ * nl_send_simple(sk, MY_MSG_TYPE, 0, buf, sizeof(buf));
  * @endcode
  *
  * @par 3) Receiving data
@@ -141,26 +56,26 @@
  * // content and gives back the pointer to you.
  * struct sockaddr_nl peer;
  * unsigned char *msg;
- * nl_recv(handle, &peer, &msg);
+ * nl_recv(sk, &peer, &msg);
  *
  * // nl_recvmsgs() receives a bunch of messages until the callback system
  * // orders it to state, usually after receving a compolete multi part
  * // message series.
- * nl_recvmsgs(handle, my_callback_configuration);
+ * nl_recvmsgs(sk, my_callback_configuration);
  *
  * // nl_recvmsgs_default() acts just like nl_recvmsg() but uses the callback
- * // configuration stored in the handle.
- * nl_recvmsgs_default(handle);
+ * // configuration stored in the socket.
+ * nl_recvmsgs_default(sk);
  *
  * // In case you want to wait for the ACK to be recieved that you requested
  * // with your latest message, you can call nl_wait_for_ack()
- * nl_wait_for_ack(handle);
+ * nl_wait_for_ack(sk);
  * @endcode
  *
  * @par 4) Closing
  * @code
  * // Close the socket first to release kernel memory
- * nl_close(handle);
+ * nl_close(sk);
  * @endcode
  * 
  * @{
@@ -180,7 +95,7 @@
 
 /**
  * Create and connect netlink socket.
- * @arg handle		Netlink handle.
+ * @arg sk		Netlink socket.
  * @arg protocol	Netlink protocol to use.
  *
  * Creates a netlink socket using the specified protocol, binds the socket
@@ -188,70 +103,70 @@
  *
  * @return 0 on success or a negative error code.
  */
-int nl_connect(struct nl_handle *handle, int protocol)
+int nl_connect(struct nl_sock *sk, int protocol)
 {
 	int err;
 	socklen_t addrlen;
 
-	handle->h_fd = socket(AF_NETLINK, SOCK_RAW, protocol);
-	if (handle->h_fd < 0) {
-		err = nl_error(1, "socket(AF_NETLINK, ...) failed");
+	sk->s_fd = socket(AF_NETLINK, SOCK_RAW, protocol);
+	if (sk->s_fd < 0) {
+		err = -nl_syserr2nlerr(errno);
 		goto errout;
 	}
 
-	if (!(handle->h_flags & NL_SOCK_BUFSIZE_SET)) {
-		err = nl_set_buffer_size(handle, 0, 0);
+	if (!(sk->s_flags & NL_SOCK_BUFSIZE_SET)) {
+		err = nl_socket_set_buffer_size(sk, 0, 0);
 		if (err < 0)
 			goto errout;
 	}
 
-	err = bind(handle->h_fd, (struct sockaddr*) &handle->h_local,
-		   sizeof(handle->h_local));
+	err = bind(sk->s_fd, (struct sockaddr*) &sk->s_local,
+		   sizeof(sk->s_local));
 	if (err < 0) {
-		err = nl_error(1, "bind() failed");
+		err = -nl_syserr2nlerr(errno);
 		goto errout;
 	}
 
-	addrlen = sizeof(handle->h_local);
-	err = getsockname(handle->h_fd, (struct sockaddr *) &handle->h_local,
+	addrlen = sizeof(sk->s_local);
+	err = getsockname(sk->s_fd, (struct sockaddr *) &sk->s_local,
 			  &addrlen);
 	if (err < 0) {
-		err = nl_error(1, "getsockname failed");
+		err = -nl_syserr2nlerr(errno);
 		goto errout;
 	}
 
-	if (addrlen != sizeof(handle->h_local)) {
-		err = nl_error(EADDRNOTAVAIL, "Invalid address length");
+	if (addrlen != sizeof(sk->s_local)) {
+		err = -NLE_NOADDR;
 		goto errout;
 	}
 
-	if (handle->h_local.nl_family != AF_NETLINK) {
-		err = nl_error(EPFNOSUPPORT, "Address format not supported");
+	if (sk->s_local.nl_family != AF_NETLINK) {
+		err = -NLE_AF_NOSUPPORT;
 		goto errout;
 	}
 
-	handle->h_proto = protocol;
+	sk->s_proto = protocol;
 
 	return 0;
 errout:
-	close(handle->h_fd);
-	handle->h_fd = -1;
+	close(sk->s_fd);
+	sk->s_fd = -1;
 
 	return err;
 }
 
 /**
  * Close/Disconnect netlink socket.
- * @arg handle		Netlink handle
+ * @arg sk		Netlink socket.
  */
-void nl_close(struct nl_handle *handle)
+void nl_close(struct nl_sock *sk)
 {
-	if (handle->h_fd >= 0) {
-		close(handle->h_fd);
-		handle->h_fd = -1;
+	if (sk->s_fd >= 0) {
+		close(sk->s_fd);
+		sk->s_fd = -1;
 	}
 
-	handle->h_proto = 0;
+	sk->s_proto = 0;
 }
 
 /** @} */
@@ -263,77 +178,73 @@ void nl_close(struct nl_handle *handle)
 
 /**
  * Send raw data over netlink socket.
- * @arg handle		Netlink handle.
+ * @arg sk		Netlink socket.
  * @arg buf		Data buffer.
  * @arg size		Size of data buffer.
  * @return Number of characters written on success or a negative error code.
  */
-int nl_sendto(struct nl_handle *handle, void *buf, size_t size)
+int nl_sendto(struct nl_sock *sk, void *buf, size_t size)
 {
 	int ret;
 
-	ret = sendto(handle->h_fd, buf, size, 0, (struct sockaddr *)
-		     &handle->h_peer, sizeof(handle->h_peer));
+	ret = sendto(sk->s_fd, buf, size, 0, (struct sockaddr *)
+		     &sk->s_peer, sizeof(sk->s_peer));
 	if (ret < 0)
-		return nl_errno(errno);
+		return -nl_syserr2nlerr(errno);
 
 	return ret;
 }
 
 /**
  * Send netlink message with control over sendmsg() message header.
- * @arg handle		Netlink handle.
+ * @arg sk		Netlink socket.
  * @arg msg		Netlink message to be sent.
  * @arg hdr		Sendmsg() message header.
  * @return Number of characters sent on sucess or a negative error code.
  */
-int nl_sendmsg(struct nl_handle *handle, struct nl_msg *msg, struct msghdr *hdr)
+int nl_sendmsg(struct nl_sock *sk, struct nl_msg *msg, struct msghdr *hdr)
 {
 	struct nl_cb *cb;
 	int ret;
 
-	struct iovec iov = {
-		.iov_base = (void *) nlmsg_hdr(msg),
-		.iov_len = nlmsg_hdr(msg)->nlmsg_len,
-	};
+	nlmsg_set_src(msg, &sk->s_local);
 
-	hdr->msg_iov = &iov;
-	hdr->msg_iovlen = 1;
-
-	nlmsg_set_src(msg, &handle->h_local);
-
-	cb = handle->h_cb;
+	cb = sk->s_cb;
 	if (cb->cb_set[NL_CB_MSG_OUT])
 		if (nl_cb_call(cb, NL_CB_MSG_OUT, msg) != NL_OK)
 			return 0;
 
-	ret = sendmsg(handle->h_fd, hdr, 0);
+	ret = sendmsg(sk->s_fd, hdr, 0);
 	if (ret < 0)
-		return nl_errno(errno);
+		return -nl_syserr2nlerr(errno);
 
+	NL_DBG(4, "sent %d bytes\n", ret);
 	return ret;
 }
 
 
 /**
  * Send netlink message.
- * @arg handle		Netlink handle
+ * @arg sk		Netlink socket.
  * @arg msg		Netlink message to be sent.
+ * @arg iov		iovec to be sent.
+ * @arg iovlen		number of struct iovec to be sent.
  * @see nl_sendmsg()
  * @return Number of characters sent on success or a negative error code.
  */
-int nl_send(struct nl_handle *handle, struct nl_msg *msg)
+int nl_send_iovec(struct nl_sock *sk, struct nl_msg *msg, struct iovec *iov, unsigned iovlen)
 {
 	struct sockaddr_nl *dst;
 	struct ucred *creds;
-	
 	struct msghdr hdr = {
-		.msg_name = (void *) &handle->h_peer,
+		.msg_name = (void *) &sk->s_peer,
 		.msg_namelen = sizeof(struct sockaddr_nl),
+		.msg_iov = iov,
+		.msg_iovlen = iovlen,
 	};
 
 	/* Overwrite destination if specified in the message itself, defaults
-	 * to the peer address of the handle.
+	 * to the peer address of the socket.
 	 */
 	dst = nlmsg_get_dst(msg);
 	if (dst->nl_family == AF_NETLINK)
@@ -355,12 +266,51 @@ int nl_send(struct nl_handle *handle, struct nl_msg *msg)
 		memcpy(CMSG_DATA(cmsg), creds, sizeof(struct ucred));
 	}
 
-	return nl_sendmsg(handle, msg, &hdr);
+	return nl_sendmsg(sk, msg, &hdr);
+}
+
+
+
+/**
+* Send netlink message.
+* @arg sk		Netlink socket.
+* @arg msg		Netlink message to be sent.
+* @see nl_sendmsg()
+* @return Number of characters sent on success or a negative error code.
+*/
+int nl_send(struct nl_sock *sk, struct nl_msg *msg)
+{
+	struct iovec iov = {
+		.iov_base = (void *) nlmsg_hdr(msg),
+		.iov_len = nlmsg_hdr(msg)->nlmsg_len,
+	};
+
+	return nl_send_iovec(sk, msg, &iov, 1);
+}
+
+void nl_auto_complete(struct nl_sock *sk, struct nl_msg *msg)
+{
+	struct nlmsghdr *nlh;
+
+	nlh = nlmsg_hdr(msg);
+	if (nlh->nlmsg_pid == 0)
+		nlh->nlmsg_pid = sk->s_local.nl_pid;
+
+	if (nlh->nlmsg_seq == 0)
+		nlh->nlmsg_seq = sk->s_seq_next++;
+
+	if (msg->nm_protocol == -1)
+		msg->nm_protocol = sk->s_proto;
+
+	nlh->nlmsg_flags |= NLM_F_REQUEST;
+
+	if (!(sk->s_flags & NL_NO_AUTO_ACK))
+		nlh->nlmsg_flags |= NLM_F_ACK;
 }
 
 /**
  * Send netlink message and check & extend header values as needed.
- * @arg handle		Netlink handle.
+ * @arg sk		Netlink socket.
  * @arg msg		Netlink message to be sent.
  *
  * Checks the netlink message \c nlh for completness and extends it
@@ -370,32 +320,21 @@ int nl_send(struct nl_handle *handle, struct nl_msg *msg)
  * @see nl_send()
  * @return Number of characters sent or a negative error code.
  */
-int nl_send_auto_complete(struct nl_handle *handle, struct nl_msg *msg)
+int nl_send_auto_complete(struct nl_sock *sk, struct nl_msg *msg)
 {
-	struct nlmsghdr *nlh;
-	struct nl_cb *cb = handle->h_cb;
+	struct nl_cb *cb = sk->s_cb;
 
-	nlh = nlmsg_hdr(msg);
-	if (nlh->nlmsg_pid == 0)
-		nlh->nlmsg_pid = handle->h_local.nl_pid;
-
-	if (nlh->nlmsg_seq == 0)
-		nlh->nlmsg_seq = handle->h_seq_next++;
-
-	if (msg->nm_protocol == -1)
-		msg->nm_protocol = handle->h_proto;
-	
-	nlh->nlmsg_flags |= (NLM_F_REQUEST | NLM_F_ACK);
+	nl_auto_complete(sk, msg);
 
 	if (cb->cb_send_ow)
-		return cb->cb_send_ow(handle, msg);
+		return cb->cb_send_ow(sk, msg);
 	else
-		return nl_send(handle, msg);
+		return nl_send(sk, msg);
 }
 
 /**
  * Send simple netlink message using nl_send_auto_complete()
- * @arg handle		Netlink handle.
+ * @arg sk		Netlink socket.
  * @arg type		Netlink message type.
  * @arg flags		Netlink message flags.
  * @arg buf		Data buffer.
@@ -407,7 +346,7 @@ int nl_send_auto_complete(struct nl_handle *handle, struct nl_msg *msg)
  * @see nl_send_auto_complete()
  * @return Number of characters sent on success or a negative error code.
  */
-int nl_send_simple(struct nl_handle *handle, int type, int flags, void *buf,
+int nl_send_simple(struct nl_sock *sk, int type, int flags, void *buf,
 		   size_t size)
 {
 	int err;
@@ -415,7 +354,7 @@ int nl_send_simple(struct nl_handle *handle, int type, int flags, void *buf,
 
 	msg = nlmsg_alloc_simple(type, flags);
 	if (!msg)
-		return nl_errno(ENOMEM);
+		return -NLE_NOMEM;
 
 	if (buf && size) {
 		err = nlmsg_append(msg, buf, size, NLMSG_ALIGNTO);
@@ -424,7 +363,7 @@ int nl_send_simple(struct nl_handle *handle, int type, int flags, void *buf,
 	}
 	
 
-	err = nl_send_auto_complete(handle, msg);
+	err = nl_send_auto_complete(sk, msg);
 errout:
 	nlmsg_free(msg);
 
@@ -440,7 +379,7 @@ errout:
 
 /**
  * Receive data from netlink socket
- * @arg handle		Netlink handle.
+ * @arg sk		Netlink socket.
  * @arg nla		Destination pointer for peer's netlink address.
  * @arg buf		Destination pointer for message content.
  * @arg creds		Destination pointer for credentials.
@@ -457,7 +396,7 @@ errout:
  *
  * @return Number of octets read, 0 on EOF or a negative error code.
  */
-int nl_recv(struct nl_handle *handle, struct sockaddr_nl *nla,
+int nl_recv(struct nl_sock *sk, struct sockaddr_nl *nla,
 	    unsigned char **buf, struct ucred **creds)
 {
 	int n;
@@ -475,22 +414,22 @@ int nl_recv(struct nl_handle *handle, struct sockaddr_nl *nla,
 	};
 	struct cmsghdr *cmsg;
 
-	if (handle->h_flags & NL_MSG_PEEK)
+	if (sk->s_flags & NL_MSG_PEEK)
 		flags |= MSG_PEEK;
 
 	if (page_size == 0)
 		page_size = getpagesize();
 
 	iov.iov_len = page_size;
-	iov.iov_base = *buf = calloc(1, iov.iov_len);
+	iov.iov_base = *buf = malloc(iov.iov_len);
 
-	if (handle->h_flags & NL_SOCK_PASSCRED) {
+	if (sk->s_flags & NL_SOCK_PASSCRED) {
 		msg.msg_controllen = CMSG_SPACE(sizeof(struct ucred));
 		msg.msg_control = calloc(1, msg.msg_controllen);
 	}
 retry:
 
-	n = recvmsg(handle->h_fd, &msg, flags);
+	n = recvmsg(sk->s_fd, &msg, flags);
 	if (!n)
 		goto abort;
 	else if (n < 0) {
@@ -503,7 +442,7 @@ retry:
 		} else {
 			free(msg.msg_control);
 			free(*buf);
-			return nl_error(errno, "recvmsg failed");
+			return -nl_syserr2nlerr(errno);
 		}
 	}
 
@@ -527,7 +466,7 @@ retry:
 	if (msg.msg_namelen != sizeof(struct sockaddr_nl)) {
 		free(msg.msg_control);
 		free(*buf);
-		return nl_error(EADDRNOTAVAIL, "socket address size mismatch");
+		return -NLE_NOADDR;
 	}
 
 	for (cmsg = CMSG_FIRSTHDR(&msg); cmsg; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
@@ -564,7 +503,7 @@ do { \
 	} \
 } while (0)
 
-static int recvmsgs(struct nl_handle *handle, struct nl_cb *cb)
+static int recvmsgs(struct nl_sock *sk, struct nl_cb *cb)
 {
 	int n, err = 0, multipart = 0;
 	unsigned char *buf = NULL;
@@ -574,30 +513,29 @@ static int recvmsgs(struct nl_handle *handle, struct nl_cb *cb)
 	struct ucred *creds = NULL;
 
 continue_reading:
-	NL_DBG(3, "Attempting to read from %p\n", handle);
+	NL_DBG(3, "Attempting to read from %p\n", sk);
 	if (cb->cb_recv_ow)
-		n = cb->cb_recv_ow(handle, &nla, &buf, &creds);
+		n = cb->cb_recv_ow(sk, &nla, &buf, &creds);
 	else
-		n = nl_recv(handle, &nla, &buf, &creds);
+		n = nl_recv(sk, &nla, &buf, &creds);
 
 	if (n <= 0)
 		return n;
 
-	NL_DBG(3, "recvmsgs(%p): Read %d bytes\n", handle, n);
+	NL_DBG(3, "recvmsgs(%p): Read %d bytes\n", sk, n);
 
 	hdr = (struct nlmsghdr *) buf;
 	while (nlmsg_ok(hdr, n)) {
-		NL_DBG(3, "recgmsgs(%p): Processing valid message...\n",
-		       handle);
+		NL_DBG(3, "recgmsgs(%p): Processing valid message...\n", sk);
 
 		nlmsg_free(msg);
 		msg = nlmsg_convert(hdr);
 		if (!msg) {
-			err = nl_errno(ENOMEM);
+			err = -NLE_NOMEM;
 			goto out;
 		}
 
-		nlmsg_set_proto(msg, handle->h_proto);
+		nlmsg_set_proto(msg, sk->s_proto);
 		nlmsg_set_src(msg, &nla);
 		if (creds)
 			nlmsg_set_creds(msg, creds);
@@ -612,12 +550,11 @@ continue_reading:
 		 * enforcing strict ordering */
 		if (cb->cb_set[NL_CB_SEQ_CHECK])
 			NL_CB_CALL(cb, NL_CB_SEQ_CHECK, msg);
-		else if (hdr->nlmsg_seq != handle->h_seq_expect) {
+		else if (hdr->nlmsg_seq != sk->s_seq_expect) {
 			if (cb->cb_set[NL_CB_INVALID])
 				NL_CB_CALL(cb, NL_CB_INVALID, msg);
 			else {
-				err = nl_error(EINVAL,
-					"Sequence number mismatch");
+				err = -NLE_SEQ_MISMATCH;
 				goto out;
 			}
 		}
@@ -628,10 +565,10 @@ continue_reading:
 		    hdr->nlmsg_type == NLMSG_OVERRUN) {
 			/* We can't check for !NLM_F_MULTI since some netlink
 			 * users in the kernel are broken. */
-			handle->h_seq_expect++;
+			sk->s_seq_expect++;
 			NL_DBG(3, "recvmsgs(%p): Increased expected " \
 			       "sequence number to %d\n",
-			       handle, handle->h_seq_expect);
+			       sk, sk->s_seq_expect);
 		}
 
 		if (hdr->nlmsg_flags & NLM_F_MULTI)
@@ -674,7 +611,7 @@ continue_reading:
 			if (cb->cb_set[NL_CB_OVERRUN])
 				NL_CB_CALL(cb, NL_CB_OVERRUN, msg);
 			else {
-				err = nl_error(EOVERFLOW, "Overrun");
+				err = -NLE_MSG_OVERFLOW;
 				goto out;
 			}
 		}
@@ -691,8 +628,7 @@ continue_reading:
 				if (cb->cb_set[NL_CB_INVALID])
 					NL_CB_CALL(cb, NL_CB_INVALID, msg);
 				else {
-					err = nl_error(EINVAL,
-					        "Truncated error message");
+					err = -NLE_MSG_TRUNC;
 					goto out;
 				}
 			} else if (e->error) {
@@ -705,13 +641,11 @@ continue_reading:
 					else if (err == NL_SKIP)
 						goto skip;
 					else if (err == NL_STOP) {
-						err = nl_error(-e->error,
-						         "Netlink Error");
+						err = -nl_syserr2nlerr(e->error);
 						goto out;
 					}
 				} else {
-					err = nl_error(-e->error,
-						  "Netlink Error");
+					err = -nl_syserr2nlerr(e->error);
 					goto out;
 				}
 			} else if (cb->cb_set[NL_CB_ACK])
@@ -751,7 +685,7 @@ out:
 
 /**
  * Receive a set of messages from a netlink socket.
- * @arg handle		netlink handle
+ * @arg sk		Netlink socket.
  * @arg cb		set of callbacks to control behaviour.
  *
  * Repeatedly calls nl_recv() or the respective replacement if provided
@@ -764,23 +698,23 @@ out:
  *
  * @return 0 on success or a negative error code from nl_recv().
  */
-int nl_recvmsgs(struct nl_handle *handle, struct nl_cb *cb)
+int nl_recvmsgs(struct nl_sock *sk, struct nl_cb *cb)
 {
 	if (cb->cb_recvmsgs_ow)
-		return cb->cb_recvmsgs_ow(handle, cb);
+		return cb->cb_recvmsgs_ow(sk, cb);
 	else
-		return recvmsgs(handle, cb);
+		return recvmsgs(sk, cb);
 }
 
 /**
- * Receive a set of message from a netlink socket using handlers in nl_handle.
- * @arg handle		netlink handle
+ * Receive a set of message from a netlink socket using handlers in nl_sock.
+ * @arg sk		Netlink socket.
  *
- * Calls nl_recvmsgs() with the handlers configured in the netlink handle.
+ * Calls nl_recvmsgs() with the handlers configured in the netlink socket.
  */
-int nl_recvmsgs_default(struct nl_handle *handle)
+int nl_recvmsgs_default(struct nl_sock *sk)
 {
-	return nl_recvmsgs(handle, handle->h_cb);
+	return nl_recvmsgs(sk, sk->s_cb);
 
 }
 
@@ -791,23 +725,23 @@ static int ack_wait_handler(struct nl_msg *msg, void *arg)
 
 /**
  * Wait for ACK.
- * @arg handle		netlink handle
+ * @arg sk		Netlink socket.
  * @pre The netlink socket must be in blocking state.
  *
  * Waits until an ACK is received for the latest not yet acknowledged
  * netlink message.
  */
-int nl_wait_for_ack(struct nl_handle *handle)
+int nl_wait_for_ack(struct nl_sock *sk)
 {
 	int err;
 	struct nl_cb *cb;
 
-	cb = nl_cb_clone(handle->h_cb);
+	cb = nl_cb_clone(sk->s_cb);
 	if (cb == NULL)
-		return nl_get_errno();
+		return -NLE_NOMEM;
 
 	nl_cb_set(cb, NL_CB_ACK, NL_CB_CUSTOM, ack_wait_handler, NULL);
-	err = nl_recvmsgs(handle, cb);
+	err = nl_recvmsgs(sk, cb);
 	nl_cb_put(cb);
 
 	return err;

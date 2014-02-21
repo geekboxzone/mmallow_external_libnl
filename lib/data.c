@@ -6,11 +6,11 @@
  *	License as published by the Free Software Foundation version 2.1
  *	of the License.
  *
- * Copyright (c) 2003-2006 Thomas Graf <tgraf@suug.ch>
+ * Copyright (c) 2003-2008 Thomas Graf <tgraf@suug.ch>
  */
 
 /**
- * @ingroup utils
+ * @ingroup core
  * @defgroup data Abstract Data
  * @{
  */
@@ -56,8 +56,22 @@ struct nl_data *nl_data_alloc(void *buf, size_t size)
 
 	return data;
 errout:
-	nl_errno(ENOMEM);
 	return NULL;
+}
+
+/**
+ * Allocate abstract data object based on netlink attribute.
+ * @arg nla		Netlink attribute of unspecific type.
+ *
+ * Allocates a new abstract data and copies the payload of the
+ * attribute to the abstract data object.
+ * 
+ * @see nla_data_alloc
+ * @return Newly allocated data handle or NULL
+ */
+struct nl_data *nl_data_alloc_attr(struct nlattr *nla)
+{
+	return nl_data_alloc(nla_data(nla), nla_len(nla));
 }
 
 /**
@@ -90,7 +104,7 @@ int nl_data_append(struct nl_data *data, void *buf, size_t size)
 	if (size > 0) {
 		data->d_data = realloc(data->d_data, data->d_size + size);
 		if (!data->d_data)
-			return nl_errno(ENOMEM);
+			return -NLE_NOMEM;
 
 		if (buf)
 			memcpy(data->d_data + data->d_size, buf, size);

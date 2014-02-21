@@ -6,7 +6,7 @@
  *	License as published by the Free Software Foundation version 2.1
  *	of the License.
  *
- * Copyright (c) 2003-2006 Thomas Graf <tgraf@suug.ch>
+ * Copyright (c) 2003-2009 Thomas Graf <tgraf@suug.ch>
  * Copyright (c) 2005-2006 Petr Gotthard <petr.gotthard@siemens.com>
  * Copyright (c) 2005-2006 Siemens AG Oesterreich
  */
@@ -40,19 +40,6 @@
 #define U32_ATTR_INDEV        0x100
 /** @endcond */
 
-static inline struct rtnl_u32 *u32_cls(struct rtnl_cls *cls)
-{
-	return (struct rtnl_u32 *) cls->c_subdata;
-}
-
-static inline struct rtnl_u32 *u32_alloc(struct rtnl_cls *cls)
-{
-	if (!cls->c_subdata)
-		cls->c_subdata = calloc(1, sizeof(struct rtnl_u32));
-
-	return u32_cls(cls);
-}
-
 static inline struct tc_u32_sel *u32_selector(struct rtnl_u32 *u)
 {
 	return (struct tc_u32_sel *) u->cu_selector->d_data;
@@ -79,17 +66,13 @@ static struct nla_policy u32_policy[TCA_U32_MAX+1] = {
 
 static int u32_msg_parser(struct rtnl_cls *cls)
 {
-	int err;
+	struct rtnl_u32 *u = rtnl_cls_data(cls);
 	struct nlattr *tb[TCA_U32_MAX + 1];
-	struct rtnl_u32 *u;
+	int err;
 
 	err = tca_parse(tb, TCA_U32_MAX, (struct rtnl_tca *) cls, u32_policy);
 	if (err < 0)
 		return err;
-
-	u = u32_alloc(cls);
-	if (!u)
-		goto errout_nomem;
 
 	if (tb[TCA_U32_DIVISOR]) {
 		u->cu_divisor = nla_get_u32(tb[TCA_U32_DIVISOR]);
@@ -97,7 +80,7 @@ static int u32_msg_parser(struct rtnl_cls *cls)
 	}
 
 	if (tb[TCA_U32_SEL]) {
-		u->cu_selector = nla_get_data(tb[TCA_U32_SEL]);
+		u->cu_selector = nl_data_alloc_attr(tb[TCA_U32_SEL]);
 		if (!u->cu_selector)
 			goto errout_nomem;
 		u->cu_mask |= U32_ATTR_SELECTOR;
@@ -119,14 +102,14 @@ static int u32_msg_parser(struct rtnl_cls *cls)
 	}
 
 	if (tb[TCA_U32_ACT]) {
-		u->cu_act = nla_get_data(tb[TCA_U32_ACT]);
+		u->cu_act = nl_data_alloc_attr(tb[TCA_U32_ACT]);
 		if (!u->cu_act)
 			goto errout_nomem;
 		u->cu_mask |= U32_ATTR_ACTION;
 	}
 
 	if (tb[TCA_U32_POLICE]) {
-		u->cu_police = nla_get_data(tb[TCA_U32_POLICE]);
+		u->cu_police = nl_data_alloc_attr(tb[TCA_U32_POLICE]);
 		if (!u->cu_police)
 			goto errout_nomem;
 		u->cu_mask |= U32_ATTR_POLICE;
@@ -137,8 +120,7 @@ static int u32_msg_parser(struct rtnl_cls *cls)
 		int pcnt_size;
 
 		if (!tb[TCA_U32_SEL]) {
-			err = nl_error(EINVAL, "Missing TCA_U32_SEL required "
-					       "for TCA_U32_PCNT");
+			err = -NLE_MISSING_ATTR;
 			goto errout;
 		}
 		
@@ -146,11 +128,11 @@ static int u32_msg_parser(struct rtnl_cls *cls)
 		pcnt_size = sizeof(struct tc_u32_pcnt) +
 				(sel->nkeys * sizeof(uint64_t));
 		if (nla_len(tb[TCA_U32_PCNT]) < pcnt_size) {
-			err = nl_error(EINVAL, "Invalid size for TCA_U32_PCNT");
+			err = -NLE_INVAL;
 			goto errout;
 		}
 
-		u->cu_pcnt = nla_get_data(tb[TCA_U32_PCNT]);
+		u->cu_pcnt = nl_data_alloc_attr(tb[TCA_U32_PCNT]);
 		if (!u->cu_pcnt)
 			goto errout_nomem;
 		u->cu_mask |= U32_ATTR_PCNT;
@@ -164,79 +146,56 @@ static int u32_msg_parser(struct rtnl_cls *cls)
 	return 0;
 
 errout_nomem:
-	err = nl_errno(ENOMEM);
+	err = -NLE_NOMEM;
 errout:
 	return err;
 }
 
 static void u32_free_data(struct rtnl_cls *cls)
 {
-	struct rtnl_u32 *u = u32_cls(cls);
-
-	if (!u)
-		return;
+	struct rtnl_u32 *u = rtnl_cls_data(cls);
 
 	nl_data_free(u->cu_selector);
 	nl_data_free(u->cu_act);
 	nl_data_free(u->cu_police);
 	nl_data_free(u->cu_pcnt);
-
-	free(cls->c_subdata);
 }
 
 static int u32_clone(struct rtnl_cls *_dst, struct rtnl_cls *_src)
 {
-	struct rtnl_u32 *dst, *src = u32_cls(_src);
+	struct rtnl_u32 *dst = rtnl_cls_data(_dst);
+	struct rtnl_u32 *src = rtnl_cls_data(_src);
 
-	if (!src)
-		return 0;
+	if (src->cu_selector &&
+	    !(dst->cu_selector = nl_data_clone(src->cu_selector)))
+		return -NLE_NOMEM;
 
-	dst = u32_alloc(_dst);
-	if (!dst)
-		return nl_errno(ENOMEM);
+	if (src->cu_act && !(dst->cu_act = nl_data_clone(src->cu_act)))
+		return -NLE_NOMEM;
 
-	if (src->cu_selector)
-		if (!(dst->cu_selector = nl_data_clone(src->cu_selector)))
-			goto errout;
+	if (src->cu_police && !(dst->cu_police = nl_data_clone(src->cu_police)))
+		return -NLE_NOMEM;
 
-	if (src->cu_act)
-		if (!(dst->cu_act = nl_data_clone(src->cu_act)))
-			goto errout;
-
-	if (src->cu_police)
-		if (!(dst->cu_police = nl_data_clone(src->cu_police)))
-			goto errout;
-
-	if (src->cu_pcnt)
-		if (!(dst->cu_pcnt = nl_data_clone(src->cu_pcnt)))
-			goto errout;
+	if (src->cu_pcnt && !(dst->cu_pcnt = nl_data_clone(src->cu_pcnt)))
+		return -NLE_NOMEM;
 
 	return 0;
-errout:
-	return nl_get_errno();
 }
 
-static int u32_dump_brief(struct rtnl_cls *cls, struct nl_dump_params *p,
-			  int line)
+static void u32_dump_line(struct rtnl_cls *cls, struct nl_dump_params *p)
 {
-	struct rtnl_u32 *u = u32_cls(cls);
+	struct rtnl_u32 *u = rtnl_cls_data(cls);
 	char buf[32];
 
-	if (!u)
-		goto ignore;
-
 	if (u->cu_mask & U32_ATTR_DIVISOR)
-		dp_dump(p, " divisor %u", u->cu_divisor);
+		nl_dump(p, " divisor %u", u->cu_divisor);
 	else if (u->cu_mask & U32_ATTR_CLASSID)
-		dp_dump(p, " target %s",
+		nl_dump(p, " target %s",
 			rtnl_tc_handle2str(u->cu_classid, buf, sizeof(buf)));
-
-ignore:
-	return line;
 }
 
-static int print_selector(struct nl_dump_params *p, struct tc_u32_sel *sel,
-			  struct rtnl_cls *cls, struct rtnl_u32 *u, int line)
+static void print_selector(struct nl_dump_params *p, struct tc_u32_sel *sel,
+			   struct rtnl_cls *cls, struct rtnl_u32 *u)
 {
 	int i;
 	struct tc_u32_key *key;
@@ -246,23 +205,23 @@ static int print_selector(struct nl_dump_params *p, struct tc_u32_sel *sel,
 		 * exports the selector if no divisor is set but hash offset
 		 * and hash mask make only sense in hash filters with divisor
 		 * set */
-		dp_dump(p, " hash at %u & 0x%x", sel->hoff, sel->hmask);
+		nl_dump(p, " hash at %u & 0x%x", sel->hoff, sel->hmask);
 	}
 
 	if (sel->flags & (TC_U32_OFFSET | TC_U32_VAROFFSET)) {
-		dp_dump(p, " offset at %u", sel->off);
+		nl_dump(p, " offset at %u", sel->off);
 
 		if (sel->flags & TC_U32_VAROFFSET)
-			dp_dump(p, " variable (at %u & 0x%x) >> %u",
+			nl_dump(p, " variable (at %u & 0x%x) >> %u",
 				sel->offoff, ntohs(sel->offmask), sel->offshift);
 	}
 
 	if (sel->flags) {
 		int flags = sel->flags;
-		dp_dump(p, " <");
+		nl_dump(p, " <");
 
 #define PRINT_FLAG(f) if (flags & TC_U32_##f) { \
-	flags &= ~TC_U32_##f; dp_dump(p, #f "%s", flags ? "," : ""); }
+	flags &= ~TC_U32_##f; nl_dump(p, #f "%s", flags ? "," : ""); }
 
 		PRINT_FLAG(TERMINAL);
 		PRINT_FLAG(OFFSET);
@@ -270,66 +229,56 @@ static int print_selector(struct nl_dump_params *p, struct tc_u32_sel *sel,
 		PRINT_FLAG(EAT);
 #undef PRINT_FLAG
 
-		dp_dump(p, ">");
+		nl_dump(p, ">");
 	}
 		
 	
 	for (i = 0; i < sel->nkeys; i++) {
 		key = (struct tc_u32_key *) ((char *) sel + sizeof(*sel)) + i;
 
-		dp_dump(p, "\n");
-		dp_dump_line(p, line++, "      match key at %s%u ",
-		key->offmask ? "nexthdr+" : "", key->off);
+		nl_dump(p, "\n");
+		nl_dump_line(p, "      match key at %s%u ",
+			key->offmask ? "nexthdr+" : "", key->off);
 
 		if (key->offmask)
-			dp_dump(p, "[0x%u] ", key->offmask);
+			nl_dump(p, "[0x%u] ", key->offmask);
 
-		dp_dump(p, "& 0x%08x == 0x%08x", ntohl(key->mask), ntohl(key->val));
+		nl_dump(p, "& 0x%08x == 0x%08x", ntohl(key->mask), ntohl(key->val));
 
 		if (p->dp_type == NL_DUMP_STATS &&
 		    (u->cu_mask & U32_ATTR_PCNT)) {
 			struct tc_u32_pcnt *pcnt = u->cu_pcnt->d_data;
-			dp_dump(p, " successful %" PRIu64, pcnt->kcnts[i]);
+			nl_dump(p, " successful %" PRIu64, pcnt->kcnts[i]);
 		}
 	}
-
-	return line;
 }
 
-
-static int u32_dump_full(struct rtnl_cls *cls, struct nl_dump_params *p,
-			 int line)
+static void u32_dump_details(struct rtnl_cls *cls, struct nl_dump_params *p)
 {
-	struct rtnl_u32 *u = u32_cls(cls);
+	struct rtnl_u32 *u = rtnl_cls_data(cls);
 	struct tc_u32_sel *s;
 
-	if (!u)
-		goto ignore;
-
 	if (!(u->cu_mask & U32_ATTR_SELECTOR)) {
-		dp_dump(p, "no-selector\n");
-		return line;
+		nl_dump(p, "no-selector\n");
+		return;
 	}
 	
 	s = u->cu_selector->d_data;
 
-	dp_dump(p, "nkeys %u ", s->nkeys);
+	nl_dump(p, "nkeys %u ", s->nkeys);
 
 	if (u->cu_mask & U32_ATTR_HASH)
-		dp_dump(p, "ht key 0x%x hash 0x%u",
+		nl_dump(p, "ht key 0x%x hash 0x%u",
 			TC_U32_USERHTID(u->cu_hash), TC_U32_HASH(u->cu_hash));
 
 	if (u->cu_mask & U32_ATTR_LINK)
-		dp_dump(p, "link %u ", u->cu_link);
+		nl_dump(p, "link %u ", u->cu_link);
 
 	if (u->cu_mask & U32_ATTR_INDEV)
-		dp_dump(p, "indev %s ", u->cu_indev);
+		nl_dump(p, "indev %s ", u->cu_indev);
 
-	line = print_selector(p, s, cls, u, line);
-	dp_dump(p, "\n");
-
-ignore:
-	return line;
+	print_selector(p, s, cls, u);
+	nl_dump(p, "\n");
 
 #if 0	
 #define U32_ATTR_ACTION       0x040
@@ -340,64 +289,50 @@ ignore:
 #endif
 }
 
-static int u32_dump_stats(struct rtnl_cls *cls, struct nl_dump_params *p,
-			  int line)
+static void u32_dump_stats(struct rtnl_cls *cls, struct nl_dump_params *p)
 {
-	struct rtnl_u32 *u = u32_cls(cls);
-
-	if (!u)
-		goto ignore;
+	struct rtnl_u32 *u = rtnl_cls_data(cls);
 
 	if (u->cu_mask & U32_ATTR_PCNT) {
 		struct tc_u32_pcnt *pc = u->cu_pcnt->d_data;
-		dp_dump(p, "\n");
-		dp_dump_line(p, line++, "%s         successful       hits\n");
-		dp_dump_line(p, line++, "%s           %8llu   %8llu\n",
+		nl_dump(p, "\n");
+		nl_dump_line(p, "    hit %8llu count %8llu\n",
 			     pc->rhit, pc->rcnt);
 	}
-
-ignore:
-	return line;
 }
 
-static struct nl_msg *u32_get_opts(struct rtnl_cls *cls)
+static int u32_get_opts(struct rtnl_cls *cls, struct nl_msg *msg)
 {
-	struct rtnl_u32 *u;
-	struct nl_msg *msg;
+	struct rtnl_u32 *u = rtnl_cls_data(cls);
 	
-	u = u32_cls(cls);
-	if (!u)
-		return NULL;
-
-	msg = nlmsg_alloc();
-	if (!msg)
-		return NULL;
-
 	if (u->cu_mask & U32_ATTR_DIVISOR)
-		nla_put_u32(msg, TCA_U32_DIVISOR, u->cu_divisor);
+		NLA_PUT_U32(msg, TCA_U32_DIVISOR, u->cu_divisor);
 
 	if (u->cu_mask & U32_ATTR_HASH)
-		nla_put_u32(msg, TCA_U32_HASH, u->cu_hash);
+		NLA_PUT_U32(msg, TCA_U32_HASH, u->cu_hash);
 
 	if (u->cu_mask & U32_ATTR_CLASSID)
-		nla_put_u32(msg, TCA_U32_CLASSID, u->cu_classid);
+		NLA_PUT_U32(msg, TCA_U32_CLASSID, u->cu_classid);
 
 	if (u->cu_mask & U32_ATTR_LINK)
-		nla_put_u32(msg, TCA_U32_LINK, u->cu_link);
+		NLA_PUT_U32(msg, TCA_U32_LINK, u->cu_link);
 
 	if (u->cu_mask & U32_ATTR_SELECTOR)
-		nla_put_data(msg, TCA_U32_SEL, u->cu_selector);
+		NLA_PUT_DATA(msg, TCA_U32_SEL, u->cu_selector);
 
 	if (u->cu_mask & U32_ATTR_ACTION)
-		nla_put_data(msg, TCA_U32_ACT, u->cu_act);
+		NLA_PUT_DATA(msg, TCA_U32_ACT, u->cu_act);
 
 	if (u->cu_mask & U32_ATTR_POLICE)
-		nla_put_data(msg, TCA_U32_POLICE, u->cu_police);
+		NLA_PUT_DATA(msg, TCA_U32_POLICE, u->cu_police);
 
 	if (u->cu_mask & U32_ATTR_INDEV)
-		nla_put_string(msg, TCA_U32_INDEV, u->cu_indev);
+		NLA_PUT_STRING(msg, TCA_U32_INDEV, u->cu_indev);
 
-	return msg;
+	return 0;
+
+nla_put_failure:
+	return -NLE_NOMEM;
 }
 
 /**
@@ -415,12 +350,8 @@ void rtnl_u32_set_handle(struct rtnl_cls *cls, int htid, int hash,
  
 int rtnl_u32_set_classid(struct rtnl_cls *cls, uint32_t classid)
 {
-	struct rtnl_u32 *u;
+	struct rtnl_u32 *u = rtnl_cls_data(cls);
 	
-	u = u32_alloc(cls);
-	if (!u)
-		return nl_errno(ENOMEM);
-
 	u->cu_classid = classid;
 	u->cu_mask |= U32_ATTR_CLASSID;
 
@@ -437,15 +368,11 @@ int rtnl_u32_set_classid(struct rtnl_cls *cls, uint32_t classid)
 int rtnl_u32_set_flags(struct rtnl_cls *cls, int flags)
 {
 	struct tc_u32_sel *sel;
-	struct rtnl_u32 *u;
-
-	u = u32_alloc(cls);
-	if (!u)
-		return nl_errno(ENOMEM);
+	struct rtnl_u32 *u = rtnl_cls_data(cls);
 
 	sel = u32_selector_alloc(u);
 	if (!sel)
-		return nl_errno(ENOMEM);
+		return -NLE_NOMEM;
 
 	sel->flags |= flags;
 	u->cu_mask |= U32_ATTR_SELECTOR;
@@ -471,16 +398,12 @@ int rtnl_u32_add_key(struct rtnl_cls *cls, uint32_t val, uint32_t mask,
 		     int off, int offmask)
 {
 	struct tc_u32_sel *sel;
-	struct rtnl_u32 *u;
+	struct rtnl_u32 *u = rtnl_cls_data(cls);
 	int err;
-
-	u = u32_alloc(cls);
-	if (!u)
-		return nl_errno(ENOMEM);
 
 	sel = u32_selector_alloc(u);
 	if (!sel)
-		return nl_errno(ENOMEM);
+		return -NLE_NOMEM;
 
 	err = nl_data_append(u->cu_selector, NULL, sizeof(struct tc_u32_key));
 	if (err < 0)
@@ -523,7 +446,7 @@ int rtnl_u32_add_key_uint16(struct rtnl_cls *cls, uint16_t val, uint16_t mask,
 {
 	int shift = ((off & 3) == 0 ? 16 : 0);
 	if (off % 2)
-		return nl_error(EINVAL, "Invalid offset alignment");
+		return -NLE_INVAL;
 
 	return rtnl_u32_add_key(cls, htonl((uint32_t)val << shift),
 				htonl((uint32_t)mask << shift),
@@ -580,13 +503,16 @@ int rtnl_u32_add_key_in6_addr(struct rtnl_cls *cls, struct in6_addr *addr,
 
 static struct rtnl_cls_ops u32_ops = {
 	.co_kind		= "u32",
+	.co_size		= sizeof(struct rtnl_u32),
 	.co_msg_parser		= u32_msg_parser,
 	.co_free_data		= u32_free_data,
 	.co_clone		= u32_clone,
 	.co_get_opts		= u32_get_opts,
-	.co_dump[NL_DUMP_BRIEF]	= u32_dump_brief,
-	.co_dump[NL_DUMP_FULL]	= u32_dump_full,
-	.co_dump[NL_DUMP_STATS]	= u32_dump_stats,
+	.co_dump = {
+	    [NL_DUMP_LINE]	= u32_dump_line,
+	    [NL_DUMP_DETAILS]	= u32_dump_details,
+	    [NL_DUMP_STATS]	= u32_dump_stats,
+	},
 };
 
 static void __init u32_init(void)

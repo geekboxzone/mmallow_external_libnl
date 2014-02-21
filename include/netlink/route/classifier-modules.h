@@ -6,7 +6,7 @@
  *	License as published by the Free Software Foundation version 2.1
  *	of the License.
  *
- * Copyright (c) 2003-2006 Thomas Graf <tgraf@suug.ch>
+ * Copyright (c) 2003-2009 Thomas Graf <tgraf@suug.ch>
  */
 
 #ifndef NETLINK_CLASS_MODULES_H_
@@ -25,19 +25,25 @@ extern "C" {
 struct rtnl_cls_ops
 {
 	/**
-	 * Kind/Name of classifier
+	 * Name of classifier module
 	 */
 	char co_kind[32];
+
+
+	/**
+	 * Size of private classifier data
+	 */
+	size_t co_size;
 
 	/**
 	 * Dump callbacks
 	 */
-	int (*co_dump[NL_DUMP_MAX+1])(struct rtnl_cls *,
-				      struct nl_dump_params *, int);
+	void (*co_dump[NL_DUMP_MAX+1])(struct rtnl_cls *,
+				       struct nl_dump_params *);
 	/**
 	 * Must return the contents supposed to be in TCA_OPTIONS
 	 */
-	struct nl_msg *(*co_get_opts)(struct rtnl_cls *);
+	int (*co_get_opts)(struct rtnl_cls *, struct nl_msg *);
 
 	/**
 	 * TCA_OPTIONS message parser

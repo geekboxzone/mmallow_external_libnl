@@ -6,10 +6,10 @@
  *	License as published by the Free Software Foundation version 2.1
  *	of the License.
  *
- * Copyright (c) 2003-2006 Thomas Graf <tgraf@suug.ch>
+ * Copyright (c) 2003-2009 Thomas Graf <tgraf@suug.ch>
  */
 
-#include "utils.h"
+#include <netlink/cli/utils.h>
 
 int main(int argc, char *argv[])
 {
@@ -21,19 +21,12 @@ int main(int argc, char *argv[])
 		fprintf(stderr, "Usage: nl-util-addr <address>\n");
 		return -1;
 	}
-	
-	a = nl_addr_parse(argv[1], AF_UNSPEC);
-	if (a == NULL) {
-		fprintf(stderr, "Cannot parse address \"%s\"\n", argv[1]);
-		return -1;
-	}
 
+	a = nl_cli_addr_parse(argv[1], AF_UNSPEC);
 	err = nl_addr_resolve(a, host, sizeof(host));
-	if (err != 0) {
-		fprintf(stderr, "Cannot resolve address \"%s\": %d\n",
-			argv[1], err);
-		return -1;
-	}
+	if (err != 0)
+		nl_cli_fatal(err, "Unable to resolve address \"%s\": %s",
+		      argv[1], nl_geterror(err));
 
 	printf("%s\n", host);
 

@@ -6,7 +6,7 @@
  *	License as published by the Free Software Foundation version 2.1
  *	of the License.
  *
- * Copyright (c) 2003-2006 Thomas Graf <tgraf@suug.ch>
+ * Copyright (c) 2003-2008 Thomas Graf <tgraf@suug.ch>
  */
 
 /**
@@ -70,7 +70,7 @@ static int dsmark_qdisc_msg_parser(struct rtnl_qdisc *qdisc)
 
 	dsmark = dsmark_qdisc_alloc(qdisc);
 	if (!dsmark)
-		return nl_errno(ENOMEM);
+		return -NLE_NOMEM;
 
 	if (tb[TCA_DSMARK_INDICES]) {
 		dsmark->qdm_indices = nla_get_u16(tb[TCA_DSMARK_INDICES]);
@@ -118,7 +118,7 @@ static int dsmark_class_msg_parser(struct rtnl_class *class)
 
 	dsmark = dsmark_class_alloc(class);
 	if (!dsmark)
-		return nl_errno(ENOMEM);
+		return -NLE_NOMEM;
 
 	if (tb[TCA_DSMARK_MASK]) {
 		dsmark->cdm_bmask = nla_get_u8(tb[TCA_DSMARK_MASK]);
@@ -133,51 +133,43 @@ static int dsmark_class_msg_parser(struct rtnl_class *class)
 	return 0;
 }
 
-static int dsmark_qdisc_dump_brief(struct rtnl_qdisc *qdisc,
-				   struct nl_dump_params *p, int line)
+static void dsmark_qdisc_dump_line(struct rtnl_qdisc *qdisc,
+				   struct nl_dump_params *p)
 {
 	struct rtnl_dsmark_qdisc *dsmark = dsmark_qdisc(qdisc);
 
 	if (dsmark && (dsmark->qdm_mask & SCH_DSMARK_ATTR_INDICES))
-		dp_dump(p, " indices 0x%04x", dsmark->qdm_indices);
-
-	return line;
+		nl_dump(p, " indices 0x%04x", dsmark->qdm_indices);
 }
 
-static int dsmark_qdisc_dump_full(struct rtnl_qdisc *qdisc,
-				  struct nl_dump_params *p, int line)
+static void dsmark_qdisc_dump_details(struct rtnl_qdisc *qdisc,
+				      struct nl_dump_params *p)
 {
 	struct rtnl_dsmark_qdisc *dsmark = dsmark_qdisc(qdisc);
 
 	if (!dsmark)
-		goto ignore;
+		return;
 
 	if (dsmark->qdm_mask & SCH_DSMARK_ATTR_DEFAULT_INDEX)
-		dp_dump(p, " default index 0x%04x", dsmark->qdm_default_index);
+		nl_dump(p, " default index 0x%04x", dsmark->qdm_default_index);
 
 	if (dsmark->qdm_mask & SCH_DSMARK_ATTR_SET_TC_INDEX)
-		dp_dump(p, " set-tc-index");
-
-ignore:
-	return line;
+		nl_dump(p, " set-tc-index");
 }
 
-static int dsmark_class_dump_brief(struct rtnl_class *class,
-				   struct nl_dump_params *p, int line)
+static void dsmark_class_dump_line(struct rtnl_class *class,
+				   struct nl_dump_params *p)
 {
 	struct rtnl_dsmark_class *dsmark = dsmark_class(class);
 
 	if (!dsmark)
-		goto ignore;
+		return;
 
 	if (dsmark->cdm_mask & SCH_DSMARK_ATTR_VALUE)
-		dp_dump(p, " value 0x%02x", dsmark->cdm_value);
+		nl_dump(p, " value 0x%02x", dsmark->cdm_value);
 
 	if (dsmark->cdm_mask & SCH_DSMARK_ATTR_MASK)
-		dp_dump(p, " mask 0x%02x", dsmark->cdm_bmask);
-
-ignore:
-	return line;
+		nl_dump(p, " mask 0x%02x", dsmark->cdm_bmask);
 }
 
 static struct nl_msg *dsmark_qdisc_get_opts(struct rtnl_qdisc *qdisc)
@@ -251,7 +243,7 @@ int rtnl_class_dsmark_set_bitmask(struct rtnl_class *class, uint8_t mask)
 	
 	dsmark = dsmark_class(class);
 	if (!dsmark)
-		return nl_errno(ENOMEM);
+		return -NLE_NOMEM;
 
 	dsmark->cdm_bmask = mask;
 	dsmark->cdm_mask |= SCH_DSMARK_ATTR_MASK;
@@ -272,7 +264,7 @@ int rtnl_class_dsmark_get_bitmask(struct rtnl_class *class)
 	if (dsmark && dsmark->cdm_mask & SCH_DSMARK_ATTR_MASK)
 		return dsmark->cdm_bmask;
 	else
-		return nl_errno(ENOENT);
+		return -NLE_NOATTR;
 }
 
 /**
@@ -287,7 +279,7 @@ int rtnl_class_dsmark_set_value(struct rtnl_class *class, uint8_t value)
 
 	dsmark = dsmark_class(class);
 	if (!dsmark)
-		return nl_errno(ENOMEM);
+		return -NLE_NOMEM;
 
 	dsmark->cdm_value = value;
 	dsmark->cdm_mask |= SCH_DSMARK_ATTR_VALUE;
@@ -308,7 +300,7 @@ int rtnl_class_dsmark_get_value(struct rtnl_class *class)
 	if (dsmark && dsmark->cdm_mask & SCH_DSMARK_ATTR_VALUE)
 		return dsmark->cdm_value;
 	else
-		return nl_errno(ENOENT);
+		return -NLE_NOATTR;
 }
 
 /** @} */
@@ -329,7 +321,7 @@ int rtnl_qdisc_dsmark_set_indices(struct rtnl_qdisc *qdisc, uint16_t indices)
 
 	dsmark = dsmark_qdisc(qdisc);
 	if (!dsmark)
-		return nl_errno(ENOMEM);
+		return -NLE_NOMEM;
 
 	dsmark->qdm_indices = indices;
 	dsmark->qdm_mask |= SCH_DSMARK_ATTR_INDICES;
@@ -350,7 +342,7 @@ int rtnl_qdisc_dsmark_get_indices(struct rtnl_qdisc *qdisc)
 	if (dsmark && dsmark->qdm_mask & SCH_DSMARK_ATTR_INDICES)
 		return dsmark->qdm_indices;
 	else
-		return nl_errno(ENOENT);
+		return -NLE_NOATTR;
 }
 
 /**
@@ -366,7 +358,7 @@ int rtnl_qdisc_dsmark_set_default_index(struct rtnl_qdisc *qdisc,
 
 	dsmark = dsmark_qdisc(qdisc);
 	if (!dsmark)
-		return nl_errno(ENOMEM);
+		return -NLE_NOMEM;
 
 	dsmark->qdm_default_index = default_index;
 	dsmark->qdm_mask |= SCH_DSMARK_ATTR_DEFAULT_INDEX;
@@ -387,7 +379,7 @@ int rtnl_qdisc_dsmark_get_default_index(struct rtnl_qdisc *qdisc)
 	if (dsmark && dsmark->qdm_mask & SCH_DSMARK_ATTR_DEFAULT_INDEX)
 		return dsmark->qdm_default_index;
 	else
-		return nl_errno(ENOENT);
+		return -NLE_NOATTR;
 }
 
 /**
@@ -402,7 +394,7 @@ int rtnl_qdisc_dsmark_set_set_tc_index(struct rtnl_qdisc *qdisc, int flag)
 
 	dsmark = dsmark_qdisc(qdisc);
 	if (!dsmark)
-		return nl_errno(ENOMEM);
+		return -NLE_NOMEM;
 
 	dsmark->qdm_set_tc_index = !!flag;
 	dsmark->qdm_mask |= SCH_DSMARK_ATTR_SET_TC_INDEX;
@@ -424,7 +416,7 @@ int rtnl_qdisc_dsmark_get_set_tc_index(struct rtnl_qdisc *qdisc)
 	if (dsmark && dsmark->qdm_mask & SCH_DSMARK_ATTR_SET_TC_INDEX)
 		return dsmark->qdm_set_tc_index;
 	else
-		return nl_errno(ENOENT);
+		return -NLE_NOATTR;
 }
 
 /** @} */
@@ -432,15 +424,17 @@ int rtnl_qdisc_dsmark_get_set_tc_index(struct rtnl_qdisc *qdisc)
 static struct rtnl_qdisc_ops dsmark_qdisc_ops = {
 	.qo_kind		= "dsmark",
 	.qo_msg_parser		= dsmark_qdisc_msg_parser,
-	.qo_dump[NL_DUMP_BRIEF]	= dsmark_qdisc_dump_brief,
-	.qo_dump[NL_DUMP_FULL]	= dsmark_qdisc_dump_full,
+	.qo_dump = {
+	    [NL_DUMP_LINE]	= dsmark_qdisc_dump_line,
+	    [NL_DUMP_DETAILS]	= dsmark_qdisc_dump_details,
+	},
 	.qo_get_opts		= dsmark_qdisc_get_opts,
 };
 
 static struct rtnl_class_ops dsmark_class_ops = {
 	.co_kind		= "dsmark",
 	.co_msg_parser		= dsmark_class_msg_parser,
-	.co_dump[NL_DUMP_BRIEF]	= dsmark_class_dump_brief,
+	.co_dump[NL_DUMP_LINE]	= dsmark_class_dump_line,
 	.co_get_opts		= dsmark_class_get_opts,
 };
 

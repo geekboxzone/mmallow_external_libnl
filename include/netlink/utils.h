@@ -6,7 +6,7 @@
  *	License as published by the Free Software Foundation version 2.1
  *	of the License.
  *
- * Copyright (c) 2003-2006 Thomas Graf <tgraf@suug.ch>
+ * Copyright (c) 2003-2008 Thomas Graf <tgraf@suug.ch>
  */
 
 #ifndef NETLINK_UTILS_H_
@@ -38,10 +38,6 @@ extern "C" {
 
 /** @} */
 
-extern char *	nl_geterror(void);
-extern int	nl_get_errno(void);
-extern void	nl_perror(const char *);
-
 /* unit pretty-printing */
 extern double	nl_cancel_down_bytes(unsigned long long, char **);
 extern double	nl_cancel_down_bits(unsigned long long, char **);
@@ -55,6 +51,7 @@ extern long	nl_prob2int(const char *);
 extern int	nl_get_hz(void);
 extern uint32_t	nl_us2ticks(uint32_t);
 extern uint32_t	nl_ticks2us(uint32_t);
+extern int	nl_str2msec(const char *, uint64_t *);
 extern char *	nl_msec2str(uint64_t, char *, size_t);
 
 /* link layer protocol translations */
@@ -70,9 +67,9 @@ extern char *	nl_ip_proto2str(int, char *, size_t);
 extern int	nl_str2ip_proto(const char *);
 
 /* Dumping helpers */
-extern void	nl_new_line(struct nl_dump_params *, int);
+extern void	nl_new_line(struct nl_dump_params *);
 extern void	nl_dump(struct nl_dump_params *, const char *, ...);
-extern void	nl_dump_line(struct nl_dump_params *, int, const char *, ...);
+extern void	nl_dump_line(struct nl_dump_params *, const char *, ...);
 
 #ifdef __cplusplus
 }

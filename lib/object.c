@@ -6,7 +6,7 @@
  *	License as published by the Free Software Foundation version 2.1
  *	of the License.
  *
- * Copyright (c) 2003-2006 Thomas Graf <tgraf@suug.ch>
+ * Copyright (c) 2003-2008 Thomas Graf <tgraf@suug.ch>
  */
 
 /**
@@ -47,10 +47,8 @@ struct nl_object *nl_object_alloc(struct nl_object_ops *ops)
 		BUG();
 
 	new = calloc(1, ops->oo_size);
-	if (!new) {
-		nl_errno(ENOMEM);
+	if (!new)
 		return NULL;
-	}
 
 	new->ce_refcnt = 1;
 	nl_init_list_head(&new->ce_list);
@@ -69,17 +67,18 @@ struct nl_object *nl_object_alloc(struct nl_object_ops *ops)
  * @arg kind		name of object type
  * @return The new object or nULL
  */
-struct nl_object *nl_object_alloc_name(const char *kind)
+int nl_object_alloc_name(const char *kind, struct nl_object **result)
 {
 	struct nl_cache_ops *ops;
 
 	ops = nl_cache_ops_lookup(kind);
-	if (!ops) {
-		nl_error(ENOENT, "Unable to lookup cache kind \"%s\"", kind);
-		return NULL;
-	}
+	if (!ops)
+		return -NLE_OPNOTSUPP;
 
-	return nl_object_alloc(ops->co_obj_ops);
+	if (!(*result = nl_object_alloc(ops->co_obj_ops)))
+		return -NLE_NOMEM;
+
+	return 0;
 }
 
 struct nl_derived_object {
@@ -109,6 +108,7 @@ struct nl_object *nl_object_clone(struct nl_object *obj)
 
 	new->ce_ops = obj->ce_ops;
 	new->ce_msgtype = obj->ce_msgtype;
+	new->ce_mask = obj->ce_mask;
 
 	if (size)
 		memcpy((void *)new + doff, (void *)obj + doff, size);
@@ -265,6 +265,8 @@ int nl_object_identical(struct nl_object *a, struct nl_object *b)
 		return 0;
 
 	req_attrs = ops->oo_id_attrs;
+	if (req_attrs == ~0)
+		req_attrs = a->ce_mask & b->ce_mask;
 
 	/* Both objects must provide all required attributes to uniquely
 	 * identify an object */
@@ -318,7 +320,7 @@ int nl_object_match_filter(struct nl_object *obj, struct nl_object *filter)
 		return 0;
 	
 	return !(ops->oo_compare(obj, filter, filter->ce_mask,
-				 LOOSE_FLAG_COMPARISON));
+				 LOOSE_COMPARISON));
 }
 
 /**
@@ -374,11 +376,6 @@ int nl_object_get_refcnt(struct nl_object *obj)
 struct nl_cache *nl_object_get_cache(struct nl_object *obj)
 {
 	return obj->ce_cache;
-}
-
-inline void *nl_object_priv(struct nl_object *obj)
-{
-	return obj;
 }
 
 /** @} */

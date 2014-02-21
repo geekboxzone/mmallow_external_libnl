@@ -6,10 +6,10 @@
  *	License as published by the Free Software Foundation version 2.1
  *	of the License.
  *
- * Copyright (c) 2003-2006 Thomas Graf <tgraf@suug.ch>
+ * Copyright (c) 2003-2009 Thomas Graf <tgraf@suug.ch>
  */
 
-#include "utils.h"
+#include <netlink/cli/utils.h>
 
 static void print_usage(void)
 {
@@ -25,20 +25,17 @@ static void print_usage(void)
 
 int main(int argc, char *argv[])
 {
-	struct nl_handle *nlh;
+	struct nl_sock *nlh;
 	struct nl_cache *result;
 	struct flnl_request *request;
 	struct nl_addr *addr;
 	struct nl_dump_params params = {
 		.dp_fd = stdout,
-		.dp_type = NL_DUMP_FULL,
+		.dp_type = NL_DUMP_DETAILS,
 	};
 	int table = RT_TABLE_UNSPEC, scope = RT_SCOPE_UNIVERSE;
 	int tos = 0, err = 1;
 	uint64_t fwmark = 0;
-
-	if (nltool_init(argc, argv) < 0)
-		return -1;
 
 	while (1) {
 		static struct option long_opts[] = {
@@ -76,24 +73,19 @@ int main(int argc, char *argv[])
 	if (optind >= argc)
 		print_usage();
 
-	nlh = nltool_alloc_handle();
-	if (!nlh)
-		return -1;
+	nlh = nl_cli_alloc_socket();
 
-	addr = nl_addr_parse(argv[optind], AF_INET);
-	if (!addr) {
-		fprintf(stderr, "Unable to parse address \"%s\": %s\n",
-			argv[optind], nl_geterror());
-		goto errout;
-	}
+	if ((err = nl_addr_parse(argv[optind], AF_INET, &addr)) < 0)
+		nl_cli_fatal(err, "Unable to parse address \"%s\": %s\n",
+			argv[optind], nl_geterror(err));
 
 	result = flnl_result_alloc_cache();
 	if (!result)
-		goto errout_addr;
+		nl_cli_fatal(ENOMEM, "Unable to allocate cache");
 
 	request = flnl_request_alloc();
 	if (!request)
-		goto errout_result;
+		nl_cli_fatal(ENOMEM, "Unable to allocate request");
 
 	flnl_request_set_table(request, table);
 	flnl_request_set_fwmark(request, fwmark);
@@ -103,28 +95,15 @@ int main(int argc, char *argv[])
 	err = flnl_request_set_addr(request, addr);
 	nl_addr_put(addr);
 	if (err < 0)
-		goto errout_put;
+		nl_cli_fatal(err, "Unable to send request: %s", nl_geterror(err));
 
-	if (nltool_connect(nlh, NETLINK_FIB_LOOKUP) < 0)
-		goto errout_put;
+	nl_cli_connect(nlh, NETLINK_FIB_LOOKUP);
 
 	err = flnl_lookup(nlh, request, result);
-	if (err < 0) {
-		fprintf(stderr, "Unable to lookup: %s\n", nl_geterror());
-		goto errout_put;
-	}
+	if (err < 0)
+		nl_cli_fatal(err, "Unable to lookup: %s\n", nl_geterror(err));
 
 	nl_cache_dump(result, &params);
 
-	err = 0;
-errout_put:
-	nl_object_put(OBJ_CAST(request));
-errout_result:
-	nl_cache_free(result);
-errout_addr:
-	nl_addr_put(addr);
-errout:
-	nl_close(nlh);
-	nl_handle_destroy(nlh);
-	return err;
+	return 0;
 }

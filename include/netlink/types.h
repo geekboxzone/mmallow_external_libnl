@@ -19,12 +19,10 @@
  * @ingroup utils
  */
 enum nl_dump_type {
-	NL_DUMP_BRIEF,		/**< Dump object in a brief one-liner */
-	NL_DUMP_FULL,		/**< Dump all attributes but no statistics */
+	NL_DUMP_LINE,		/**< Dump object briefly on one line */
+	NL_DUMP_DETAILS,	/**< Dump all attributes but no statistics */
 	NL_DUMP_STATS,		/**< Dump all attributes including statistics */
-	NL_DUMP_XML,		/**< Dump all attribtes in XML format */
 	NL_DUMP_ENV,		/**< Dump all attribtues as env variables */
-	NL_DUMP_EVENTS,		/**< Dump event */
 	__NL_DUMP_MAX,
 };
 #define NL_DUMP_MAX (__NL_DUMP_MAX - 1)
@@ -100,6 +98,14 @@ struct nl_dump_params
 	 * Set if a dump was performed prior to the actual dump handler.
 	 */
 	int			dp_pre_dump;
+
+	/**
+	 * PRIVATE
+	 * Owned by the current caller
+	 */
+	int			dp_ivar;
+
+	unsigned int		dp_line;
 };
 
 #endif

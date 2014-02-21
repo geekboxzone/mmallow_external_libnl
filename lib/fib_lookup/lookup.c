@@ -6,11 +6,10 @@
  *	License as published by the Free Software Foundation version 2.1
  *	of the License.
  *
- * Copyright (c) 2003-2006 Thomas Graf <tgraf@suug.ch>
+ * Copyright (c) 2003-2008 Thomas Graf <tgraf@suug.ch>
  */
 
 /**
- * @ingroup nlfam
  * @defgroup fib_lookup FIB Lookup
  * @brief
  * @{
@@ -63,7 +62,7 @@ static int result_clone(struct nl_object *_dst, struct nl_object *_src)
 	if (src->fr_req)
 		if (!(dst->fr_req = (struct flnl_request *)
 				nl_object_clone(OBJ_CAST(src->fr_req))))
-			return nl_get_errno();
+			return -NLE_NOMEM;
 	
 	return 0;
 }
@@ -74,7 +73,7 @@ static int result_msg_parser(struct nl_cache_ops *ops, struct sockaddr_nl *who,
 	struct flnl_result *res;
 	struct fib_result_nl *fr;
 	struct nl_addr *addr;
-	int err = -EINVAL;
+	int err = -NLE_INVAL;
 
 	res = flnl_result_alloc();
 	if (!res)
@@ -121,27 +120,24 @@ errout:
 	return err;
 }
 
-static int result_dump_brief(struct nl_object *obj, struct nl_dump_params *p)
+static void result_dump_line(struct nl_object *obj, struct nl_dump_params *p)
 {
 	struct flnl_result *res = (struct flnl_result *) obj;
 	char buf[128];
-	int line = 1;
 
-	dp_dump(p, "table %s prefixlen %u next-hop-selector %u\n",
+	nl_dump_line(p, "table %s prefixlen %u next-hop-selector %u\n",
 		rtnl_route_table2str(res->fr_table_id, buf, sizeof(buf)),
 		res->fr_prefixlen, res->fr_nh_sel);
-	dp_dump_line(p, line++, "type %s ",
+	nl_dump_line(p, "type %s ",
 		     nl_rtntype2str(res->fr_type, buf, sizeof(buf)));
-	dp_dump(p, "scope %s error %s (%d)\n",
+	nl_dump(p, "scope %s error %s (%d)\n",
 		rtnl_scope2str(res->fr_scope, buf, sizeof(buf)),
 		strerror(-res->fr_error), res->fr_error);
-
-	return line;
 }
 
-static int result_dump_full(struct nl_object *obj, struct nl_dump_params *p)
+static void result_dump_details(struct nl_object *obj, struct nl_dump_params *p)
 {
-	return result_dump_brief(obj, p);
+	result_dump_line(obj, p);
 }
 
 static int result_compare(struct nl_object *_a, struct nl_object *_b,
@@ -209,7 +205,8 @@ struct nl_cache *flnl_result_alloc_cache(void)
  * @note Not all attributes can be changed, see
  *       \ref link_changeable "Changeable Attributes" for more details.
  */
-struct nl_msg *flnl_lookup_build_request(struct flnl_request *req, int flags)
+int flnl_lookup_build_request(struct flnl_request *req, int flags,
+			      struct nl_msg **result)
 {
 	struct nl_msg *msg;
 	struct nl_addr *addr;
@@ -228,30 +225,29 @@ struct nl_msg *flnl_lookup_build_request(struct flnl_request *req, int flags)
 	fr.tb_id_in = table >= 0 ? table : RT_TABLE_UNSPEC;
 
 	addr = flnl_request_get_addr(req);
-	if (!addr) {
-		nl_error(EINVAL, "Request must specify the address");
-		return NULL;
-	}
+	if (!addr)
+		return -NLE_MISSING_ATTR;
 
 	fr.fl_addr = *(uint32_t *) nl_addr_get_binary_addr(addr);
 
 	msg = nlmsg_alloc_simple(0, flags);
 	if (!msg)
-		goto errout;
+		return -NLE_NOMEM;
 
 	if (nlmsg_append(msg, &fr, sizeof(fr), NLMSG_ALIGNTO) < 0)
 		goto errout;
 
-	return msg;
+	*result = msg;
+	return 0;
 
 errout:
 	nlmsg_free(msg);
-	return NULL;
+	return -NLE_MSGSIZE;
 }
 
 /**
  * Perform FIB Lookup
- * @arg handle		Netlink handle.
+ * @arg sk		Netlink socket.
  * @arg req		Lookup request object.
  * @arg cache		Cache for result.
  *
@@ -260,22 +256,21 @@ errout:
  *
  * @return 0 on success or a negative error code.
  */
-int flnl_lookup(struct nl_handle *handle, struct flnl_request *req,
+int flnl_lookup(struct nl_sock *sk, struct flnl_request *req,
 		struct nl_cache *cache)
 {
 	struct nl_msg *msg;
 	int err;
 
-	msg = flnl_lookup_build_request(req, 0);
-	if (!msg)
-		return nl_errno(ENOMEM);
+	if ((err = flnl_lookup_build_request(req, 0, &msg)) < 0)
+		return err;
 
-	err = nl_send_auto_complete(handle, msg);
+	err = nl_send_auto_complete(sk, msg);
 	nlmsg_free(msg);
 	if (err < 0)
 		return err;
 
-	return nl_cache_pickup(handle, cache);
+	return nl_cache_pickup(sk, cache);
 }
 
 /** @} */
@@ -322,8 +317,10 @@ static struct nl_object_ops result_obj_ops = {
 	.oo_size		= sizeof(struct flnl_result),
 	.oo_free_data		= result_free_data,
 	.oo_clone		= result_clone,
-	.oo_dump[NL_DUMP_BRIEF]	= result_dump_brief,
-	.oo_dump[NL_DUMP_FULL]	= result_dump_full,
+	.oo_dump = {
+	    [NL_DUMP_LINE]	= result_dump_line,
+	    [NL_DUMP_DETAILS]	= result_dump_details,
+	},
 	.oo_compare		= result_compare,
 };
 
